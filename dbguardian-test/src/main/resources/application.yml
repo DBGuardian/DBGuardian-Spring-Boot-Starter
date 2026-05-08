@@ -1,0 +1,103 @@
+server:
+  port: 8081
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: dbguardian-test
+
+  # 排除 Spring Boot 默认数据源自动配置
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration
+
+  # MVC配置
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
+
+  # Jackson配置
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+
+  # 主库数据源配置
+  datasource:
+    master:
+      url: jdbc:mysql://106.55.104.229:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      username: root
+      password: Ry260104.Ry260104.
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      hikari:
+        maximum-pool-size: 10
+        minimum-idle: 2
+        connection-timeout: 30000
+        idle-timeout: 600000
+        max-lifetime: 1800000
+    # 从库数据源配置
+    slave:
+      url: jdbc:mysql://42.194.239.94:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      username: root
+      password: Ry260104.Ry260104.
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      hikari:
+        maximum-pool-size: 10
+        minimum-idle: 2
+        connection-timeout: 30000
+        idle-timeout: 600000
+        max-lifetime: 1800000
+    # 主从复制配置
+    replication:
+      master-host: 106.55.104.229
+      master-port: 3306
+      master-user: repl
+      master-password: Ry260104.Ry260104.
+      auto-reconnect: true
+    # 降级启动配置
+    allow-degraded-startup: true
+
+  # Redis配置（用于协调服务）
+  redis:
+    host: 106.55.104.229
+    port: 6379
+    password: Ry260104.Ry260104.
+    database: 0
+    timeout: 10000ms
+    lettuce:
+      pool:
+        max-active: 20
+        max-wait: 3000ms
+        max-idle: 5
+        min-idle: 1
+
+# MyBatis-Plus配置
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+  mapper-locations: classpath:mapper/**/*.xml
+  type-aliases-package: com.test.entity
+
+# Knife4j配置
+knife4j:
+  enable: true
+  openapi:
+    title: DBGuardian 测试项目API文档
+    description: 用于测试读写分离功能
+    version: 1.0.0
+
+# 日志配置
+logging:
+  level:
+    root: INFO
+    com.test: DEBUG
+    io.dbguardian: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{50} - %msg%n"
