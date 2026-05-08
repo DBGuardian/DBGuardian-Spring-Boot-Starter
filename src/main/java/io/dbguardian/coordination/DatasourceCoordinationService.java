@@ -1,42 +1,58 @@
-package com.erp.config;
+package io.dbguardian.coordination;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
-import java.util.Collections;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
  * 数据源分布式协调服务
  * 使用 Redis 实现多个后端实例间的数据源状态同步
+ * 
+ * 基于 business-workflow-erp-java 项目的 DatasourceCoordinationService 实现
  */
 @Slf4j
 @Service
 public class DatasourceCoordinationService {
 
-    private static final String MASTER_STATUS_KEY = "erp:datasource:master:status";
-    private static final String MASTER_INSTANCE_KEY = "erp:datasource:master:instance";
-    private static final String FAILOVER_LOCK_KEY = "erp:datasource:failover:lock";
-    private static final String STATUS_CHANNEL = "erp:datasource:status:channel";
+    private static final String MASTER_STATUS_KEY = "dbguardian:datasource:master:status";
+    private static final String MASTER_INSTANCE_KEY = "dbguardian:datasource:master:instance";
+    private static final String FAILOVER_LOCK_KEY = "dbguardian:datasource:failover:lock";
+    private static final String STATUS_CHANNEL = "dbguardian:datasource:status:channel";
 
     public static final String STATUS_NORMAL = "NORMAL";
     public static final String STATUS_SLAVE_PROMOTED = "SLAVE_PROMOTED";
 
-    @Autowired
+    @Autowired(required = false)
     private RedisTemplate<String, Object> redisTemplate;
+
+    private volatile boolean redisAvailable = true;
 
     /**
      * 当前实例的唯一标识
      */
     private final String instanceId = UUID.randomUUID().toString();
 
-    @Value("${spring.application.name:erp-server}")
+    @Value("${spring.application.name:dbguardian}")
     private String applicationName;
+
+    /**
+     * 用于 Spring 注入 RedisTemplate
+     */
+    public void setRedisTemplate(RedisTemplate<String, Object> redisTemplate) {
+        this.redisTemplate = redisTemplate;
+    }
+
+    /**
+     * 用于 Spring 注入 applicationName
+     */
+    public void setApplicationName(String applicationName) {
+        this.applicationName = applicationName;
+    }
 
     /**
      * 获取当前实例ID
@@ -50,6 +66,9 @@ public class DatasourceCoordinationService {
      * @return NORMAL-主库正常, SLAVE_PROMOTED-从库升主库
      */
     public String getMasterStatus() {
+        if (redisTemplate == null) {
+            return STATUS_NORMAL;
+        }
         try {
             Object status = redisTemplate.opsForValue().get(MASTER_STATUS_KEY);
             if (status == null) {
@@ -67,6 +86,9 @@ public class DatasourceCoordinationService {
      * @param status 状态值
      */
     public void setMasterStatus(String status) {
+        if (redisTemplate == null) {
+            return;
+        }
         try {
             redisTemplate.opsForValue().set(MASTER_STATUS_KEY, status);
             log.info("更新主库状态到Redis: {}", status);
@@ -83,6 +105,9 @@ public class DatasourceCoordinationService {
      * @return 实例ID
      */
     public String getMasterInstanceId() {
+        if (redisTemplate == null) {
+            return null;
+        }
         try {
             Object instanceId = redisTemplate.opsForValue().get(MASTER_INSTANCE_KEY);
             return instanceId != null ? instanceId.toString() : null;
@@ -97,6 +122,9 @@ public class DatasourceCoordinationService {
      * @param instanceId 实例ID
      */
     public void registerAsMaster(String instanceId) {
+        if (redisTemplate == null) {
+            return;
+        }
         try {
             redisTemplate.opsForValue().set(MASTER_INSTANCE_KEY, instanceId);
             log.info("注册主库实例: {}", instanceId);
@@ -112,6 +140,9 @@ public class DatasourceCoordinationService {
      * @return true-获取成功，false-获取失败
      */
     public boolean tryAcquireFailoverLock(long expireSeconds) {
+        if (redisTemplate == null) {
+            return false;
+        }
         try {
             Boolean success = redisTemplate.opsForValue().setIfAbsent(
                 FAILOVER_LOCK_KEY,
@@ -136,6 +167,9 @@ public class DatasourceCoordinationService {
      * 释放故障转移锁
      */
     public void releaseFailoverLock() {
+        if (redisTemplate == null) {
+            return;
+        }
         try {
             Object currentHolder = redisTemplate.opsForValue().get(FAILOVER_LOCK_KEY);
             if (instanceId.equals(currentHolder)) {
@@ -168,6 +202,9 @@ public class DatasourceCoordinationService {
      * 广播状态变更到所有实例
      */
     private void broadcastStatusChange(String status) {
+        if (redisTemplate == null) {
+            return;
+        }
         try {
             redisTemplate.convertAndSend(STATUS_CHANNEL, status);
             log.info("广播状态变更: {}", status);
@@ -181,6 +218,10 @@ public class DatasourceCoordinationService {
      * 在应用启动时调用
      */
     public void initialize() {
+        if (redisTemplate == null) {
+            log.warn("Redis不可用，跳过协调服务初始化");
+            return;
+        }
         try {
             // 注册当前实例
             registerAsMaster(instanceId);
@@ -197,10 +238,16 @@ public class DatasourceCoordinationService {
      * @return true-Redis可用
      */
     public boolean isHealthy() {
+        if (redisTemplate == null) {
+            redisAvailable = false;
+            return false;
+        }
         try {
             redisTemplate.opsForValue().get("health-check");
+            redisAvailable = true;
             return true;
         } catch (Exception e) {
+            redisAvailable = false;
             log.error("Redis健康检查失败: {}", e.getMessage());
             return false;
         }
@@ -212,9 +259,9 @@ public class DatasourceCoordinationService {
     public CoordinationStatus getCoordinationStatus() {
         CoordinationStatus status = new CoordinationStatus();
         status.setInstanceId(instanceId);
-        status.setMasterInstanceId(getMasterInstanceId());
-        status.setMasterStatus(getMasterStatus());
-        status.setRedisHealthy(isHealthy());
+        status.setMasterInstanceId(redisTemplate != null ? getMasterInstanceId() : null);
+        status.setMasterStatus(redisTemplate != null ? getMasterStatus() : STATUS_NORMAL);
+        status.setRedisHealthy(redisTemplate != null && isHealthy());
         return status;
     }
 

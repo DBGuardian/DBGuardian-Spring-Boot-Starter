@@ -1,8 +1,12 @@
-package com.erp.config;
+package io.dbguardian.config;
 
 import com.zaxxer.hikari.HikariDataSource;
+import io.dbguardian.coordination.DatasourceCoordinationService;
+import io.dbguardian.enums.DataSourceStatus;
+import io.dbguardian.enums.DataSourceType;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Bean;
@@ -32,11 +36,13 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * 读写分离数据源配置
  * 支持主从故障转移（从库升主库）
+ * 
+ * 基于 business-workflow-erp-java 项目的 DataSourceConfig 实现
  */
 @Configuration
 @EnableScheduling
 @Slf4j
-public class DataSourceConfig {
+public class DbGuardianDataSourceConfig {
 
     @Value("${spring.datasource.master.url}")
     private String masterUrl;
@@ -87,7 +93,7 @@ public class DataSourceConfig {
     @Value("${spring.datasource.replication.master-user:repl}")
     private String replicationMasterUser;
 
-    @Value("${spring.datasource.replication.master-password:Ry260104.Ry260104.}")
+    @Value("${spring.datasource.replication.master-password:}")
     private String replicationMasterPassword;
 
     @Value("${spring.datasource.replication.auto-reconnect:true}")
@@ -128,18 +134,18 @@ public class DataSourceConfig {
     /**
      * 主数据源（写操作使用）
      */
-    @Bean("masterDataSource")
+    @Bean("dbguardianMasterDataSource")
     public DataSource masterDataSource() {
-        masterDataSourceBean = createDataSource(masterUrl, masterUsername, masterPassword, driverClassName, masterPoolSize, masterMinIdle, "master-pool", !allowDegradedStartup);
+        masterDataSourceBean = createDataSource(masterUrl, masterUsername, masterPassword, driverClassName, masterPoolSize, masterMinIdle, "dbguardian-master-pool", !allowDegradedStartup);
         return masterDataSourceBean;
     }
 
     /**
      * 从数据源（读操作使用）
      */
-    @Bean("slaveDataSource")
+    @Bean("dbguardianSlaveDataSource")
     public DataSource slaveDataSource() {
-        slaveDataSourceBean = createDataSource(slaveUrl, slaveUsername, slavePassword, slaveDriverClassName, slavePoolSize, slaveMinIdle, "slave-pool", !allowDegradedStartup);
+        slaveDataSourceBean = createDataSource(slaveUrl, slaveUsername, slavePassword, slaveDriverClassName, slavePoolSize, slaveMinIdle, "dbguardian-slave-pool", !allowDegradedStartup);
         return slaveDataSourceBean;
     }
 
@@ -168,9 +174,11 @@ public class DataSourceConfig {
     /**
      * 动态数据源（根据上下文切换主从）
      */
-    @Bean("dataSource")
+    @Bean("dbguardianRoutingDataSource")
     @Primary
-    public DataSource routingDataSource(DataSource masterDataSource, DataSource slaveDataSource) {
+    public DataSource routingDataSource(
+            @Qualifier("dbguardianMasterDataSource") DataSource masterDataSource,
+            @Qualifier("dbguardianSlaveDataSource") DataSource slaveDataSource) {
         Map<Object, Object> targetDataSources = new HashMap<>(2);
         targetDataSources.put(DataSourceType.MASTER, masterDataSource);
         targetDataSources.put(DataSourceType.SLAVE, slaveDataSource);
@@ -187,7 +195,7 @@ public class DataSourceConfig {
      */
     @PostConstruct
     public void init() {
-        log.info("=== 读写分离配置初始化 ===");
+        log.info("=== DBGuardian 读写分离配置初始化 ===");
 
         // 快速检查，仅用于决定是否允许降级启动
         boolean masterOk = checkMasterHealth();
@@ -666,7 +674,7 @@ public class DataSourceConfig {
      */
     private void disableSlaveReadOnly() {
         try (Connection conn = slaveDataSourceBean.getConnection();
-             java.sql.Statement stmt = conn.createStatement()) {
+             Statement stmt = conn.createStatement()) {
             // 停止主从复制
             try {
                 stmt.execute("STOP SLAVE");
@@ -701,7 +709,7 @@ public class DataSourceConfig {
             // 此时 slaveDataSourceBean 指向的是原从库（新主库）
             // 需要在新主库上执行操作
             try (Connection newMasterConn = slaveDataSourceBean.getConnection();
-                 java.sql.Statement stmt = newMasterConn.createStatement()) {
+                 Statement stmt = newMasterConn.createStatement()) {
                 stmt.execute("FLUSH TABLES WITH READ LOCK");
                 log.info("新主库已加读锁");
             }
@@ -711,7 +719,7 @@ public class DataSourceConfig {
 
             // 解锁新主库
             try (Connection newMasterConn = slaveDataSourceBean.getConnection();
-                 java.sql.Statement stmt = newMasterConn.createStatement()) {
+                 Statement stmt = newMasterConn.createStatement()) {
                 stmt.execute("UNLOCK TABLES");
                 log.info("新主库已解锁");
             }
@@ -735,7 +743,7 @@ public class DataSourceConfig {
         }
 
         try (Connection masterConn = masterDataSourceBean.getConnection();
-             java.sql.Statement stmt = masterConn.createStatement()) {
+             Statement stmt = masterConn.createStatement()) {
 
             // 1. 停止可能存在的旧复制
             try {
@@ -748,8 +756,8 @@ public class DataSourceConfig {
             String newMasterHost;
             int newMasterPort;
             try (Connection newMasterConn = slaveDataSourceBean.getConnection();
-                 java.sql.Statement newMasterStmt = newMasterConn.createStatement();
-                 java.sql.ResultSet rs = newMasterStmt.executeQuery("SELECT @@hostname, @@port")) {
+                 Statement newMasterStmt = newMasterConn.createStatement();
+                 ResultSet rs = newMasterStmt.executeQuery("SELECT @@hostname, @@port")) {
                 if (rs.next()) {
                     newMasterHost = rs.getString(1);
                     newMasterPort = rs.getInt(2);
@@ -792,8 +800,8 @@ public class DataSourceConfig {
                 try {
                     Thread.sleep(2000);
                     try (Connection checkConn = masterDataSourceBean.getConnection();
-                         java.sql.Statement checkStmt = checkConn.createStatement();
-                         java.sql.ResultSet rs = checkStmt.executeQuery("SHOW SLAVE STATUS")) {
+                         Statement checkStmt = checkConn.createStatement();
+                         ResultSet rs = checkStmt.executeQuery("SHOW SLAVE STATUS")) {
                         if (rs.next()) {
                             String ioRunning = rs.getString("Slave_IO_Running");
                             String sqlRunning = rs.getString("Slave_SQL_Running");
@@ -873,7 +881,7 @@ public class DataSourceConfig {
 
             // 3. 在原主库上停止复制，关闭只读
             try (Connection masterConn = masterDataSourceBean.getConnection();
-                 java.sql.Statement stmt = masterConn.createStatement()) {
+                 Statement stmt = masterConn.createStatement()) {
                 stmt.execute("STOP SLAVE");
                 stmt.execute("RESET SLAVE ALL");
                 stmt.execute("SET GLOBAL READ_ONLY=OFF");
@@ -938,7 +946,7 @@ public class DataSourceConfig {
             configureReverseReplication();
 
             try (Connection masterConn = masterDataSourceBean.getConnection();
-                 java.sql.Statement stmt = masterConn.createStatement()) {
+                 Statement stmt = masterConn.createStatement()) {
                 stmt.execute("STOP SLAVE");
                 stmt.execute("RESET SLAVE ALL");
                 stmt.execute("SET GLOBAL READ_ONLY=OFF");
@@ -983,8 +991,8 @@ public class DataSourceConfig {
         while (waitCount < maxWait) {
             try {
                 try (Connection masterConn = masterDataSourceBean.getConnection();
-                     java.sql.Statement stmt = masterConn.createStatement();
-                     java.sql.ResultSet rs = stmt.executeQuery("SHOW SLAVE STATUS")) {
+                     Statement stmt = masterConn.createStatement();
+                     ResultSet rs = stmt.executeQuery("SHOW SLAVE STATUS")) {
 
                     if (rs.next()) {
                         String ioRunning = rs.getString("Slave_IO_Running");
@@ -1045,8 +1053,8 @@ public class DataSourceConfig {
 
         if (currentStatus.get() == DataSourceStatus.SLAVE_PROMOTED) {
             try (Connection masterConn = masterDataSourceBean.getConnection();
-                 java.sql.Statement stmt = masterConn.createStatement();
-                 java.sql.ResultSet rs = stmt.executeQuery("SHOW SLAVE STATUS")) {
+                 Statement stmt = masterConn.createStatement();
+                 ResultSet rs = stmt.executeQuery("SHOW SLAVE STATUS")) {
 
                 if (rs.next()) {
                     String ioRunning = rs.getString("Slave_IO_Running");
@@ -1074,46 +1082,14 @@ public class DataSourceConfig {
     }
 
     /**
-     * 追赶状态类
-     */
-    public static class RecoveryStatus {
-        private boolean originalMasterHealthy;
-        private String currentStatus;
-        private boolean ioRunning;
-        private boolean sqlRunning;
-        private int secondsBehindMaster;
-        private boolean caughtUp;
-        private boolean readyToSwitch;
-        private String message;
-
-        // getters and setters
-        public boolean isOriginalMasterHealthy() { return originalMasterHealthy; }
-        public void setOriginalMasterHealthy(boolean v) { this.originalMasterHealthy = v; }
-        public String getCurrentStatus() { return currentStatus; }
-        public void setCurrentStatus(String v) { this.currentStatus = v; }
-        public boolean isIoRunning() { return ioRunning; }
-        public void setIoRunning(boolean v) { this.ioRunning = v; }
-        public boolean isSqlRunning() { return sqlRunning; }
-        public void setSqlRunning(boolean v) { this.sqlRunning = v; }
-        public int getSecondsBehindMaster() { return secondsBehindMaster; }
-        public void setSecondsBehindMaster(int v) { this.secondsBehindMaster = v; }
-        public boolean isCaughtUp() { return caughtUp; }
-        public void setCaughtUp(boolean v) { this.caughtUp = v; }
-        public boolean isReadyToSwitch() { return readyToSwitch; }
-        public void setReadyToSwitch(boolean v) { this.readyToSwitch = v; }
-        public String getMessage() { return message; }
-        public void setMessage(String v) { this.message = v; }
-    }
-
-    /**
      * 将新主库（原从库）配置为原主库的从库（反向复制）
      */
     private void configureReverseReplication() throws SQLException {
         try (Connection slaveConn = slaveDataSourceBean.getConnection();
-             java.sql.Statement stmt = slaveConn.createStatement()) {
+             Statement stmt = slaveConn.createStatement()) {
 
             // 1. 获取当前新主库（原从库）的复制位置
-            try (java.sql.ResultSet rs = stmt.executeQuery("SHOW MASTER STATUS")) {
+            try (ResultSet rs = stmt.executeQuery("SHOW MASTER STATUS")) {
                 if (rs.next()) {
                     String masterLogFile = rs.getString("File");
                     long masterLogPos = rs.getLong("Position");
@@ -1148,35 +1124,29 @@ public class DataSourceConfig {
         log.info("已切换回主库");
     }
 
-    /**
-     * 获取当前数据源状态
-     */
+    // ==================== Getter Methods ====================
+
     public DataSourceStatus getCurrentStatus() {
         return currentStatus.get();
     }
 
-    /**
-     * 获取主库健康状态
-     */
     public boolean isMasterHealthy() {
         return !masterFailed.get();
     }
 
-    /**
-     * 获取从库健康状态
-     */
     public boolean isSlaveHealthy() {
         return !slaveFailed.get();
     }
 
-    /**
-     * 数据源状态
-     */
-    public enum DataSourceStatus {
-        MASTER_ACTIVE,    // 主库活跃
-        SLAVE_PROMOTED,   // 从库升主库
-        DEGRADED          // 降级模式（仅从库可用）
+    public HikariDataSource getMasterDataSourceBean() {
+        return masterDataSourceBean;
     }
+
+    public HikariDataSource getSlaveDataSourceBean() {
+        return slaveDataSourceBean;
+    }
+
+    // ==================== Inner Classes ====================
 
     /**
      * 数据源上下文持有者
@@ -1206,14 +1176,6 @@ public class DataSourceConfig {
     }
 
     /**
-     * 数据源类型枚举
-     */
-    public enum DataSourceType {
-        MASTER,
-        SLAVE
-    }
-
-    /**
      * 动态路由数据源
      */
     public static class RoutingDataSource extends AbstractRoutingDataSource {
@@ -1226,5 +1188,36 @@ public class DataSourceConfig {
             }
             return type;
         }
+    }
+
+    /**
+     * 追赶状态类
+     */
+    public static class RecoveryStatus {
+        private boolean originalMasterHealthy;
+        private String currentStatus;
+        private boolean ioRunning;
+        private boolean sqlRunning;
+        private int secondsBehindMaster;
+        private boolean caughtUp;
+        private boolean readyToSwitch;
+        private String message;
+
+        public boolean isOriginalMasterHealthy() { return originalMasterHealthy; }
+        public void setOriginalMasterHealthy(boolean v) { this.originalMasterHealthy = v; }
+        public String getCurrentStatus() { return currentStatus; }
+        public void setCurrentStatus(String v) { this.currentStatus = v; }
+        public boolean isIoRunning() { return ioRunning; }
+        public void setIoRunning(boolean v) { this.ioRunning = v; }
+        public boolean isSqlRunning() { return sqlRunning; }
+        public void setSqlRunning(boolean v) { this.sqlRunning = v; }
+        public int getSecondsBehindMaster() { return secondsBehindMaster; }
+        public void setSecondsBehindMaster(int v) { this.secondsBehindMaster = v; }
+        public boolean isCaughtUp() { return caughtUp; }
+        public void setCaughtUp(boolean v) { this.caughtUp = v; }
+        public boolean isReadyToSwitch() { return readyToSwitch; }
+        public void setReadyToSwitch(boolean v) { this.readyToSwitch = v; }
+        public String getMessage() { return message; }
+        public void setMessage(String v) { this.message = v; }
     }
 }

@@ -1,12 +1,13 @@
-package com.erp.aop;
+package io.dbguardian.aspect;
 
-import com.erp.config.DataSourceConfig.DataSourceContextHolder;
-import com.erp.config.DataSourceConfig.DataSourceType;
-import com.erp.config.DataSourceConfig;
+import io.dbguardian.config.DbGuardianDataSourceConfig;
+import io.dbguardian.enums.DataSourceStatus;
+import io.dbguardian.enums.DataSourceType;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.annotation.Pointcut;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
@@ -17,18 +18,16 @@ import org.springframework.stereotype.Component;
 @Aspect
 @Component
 @Order(0)
-public class DataSourceAspect {
+public class DbGuardianDataSourceAspect {
 
-    private final DataSourceConfig dataSourceConfig;
-
-    public DataSourceAspect(DataSourceConfig dataSourceConfig) {
-        this.dataSourceConfig = dataSourceConfig;
-    }
+    @Autowired
+    private DbGuardianDataSourceConfig dataSourceConfig;
 
     /**
-     * 定义切点：mapper 包下的所有方法
+     * 定义切点：MyBatis-Plus BaseMapper 的所有方法
+     * 支持任意项目使用 MyBatis-Plus
      */
-    @Pointcut("execution(* com.erp.mapper..*.*(..))")
+    @Pointcut("execution(* com.baomidou.mybatisplus.core.mapper.BaseMapper+.*(..))")
     public void mapperPointcut() {
     }
 
@@ -38,27 +37,21 @@ public class DataSourceAspect {
     @Around("mapperPointcut()")
     public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
         try {
-            // 根据方法名判断读写操作
             String methodName = joinPoint.getSignature().getName();
 
-            // 检查当前数据源状态
-            DataSourceConfig.DataSourceStatus status = dataSourceConfig.getCurrentStatus();
+            DataSourceStatus status = dataSourceConfig.getCurrentStatus();
 
-            if (status == DataSourceConfig.DataSourceStatus.SLAVE_PROMOTED) {
-                // 从库升主库模式，所有操作使用主库
-                DataSourceContextHolder.useMaster();
+            if (status == DataSourceStatus.SLAVE_PROMOTED) {
+                DbGuardianDataSourceConfig.DataSourceContextHolder.useMaster();
             } else if (isReadMethod(methodName)) {
-                // 读操作使用从库
-                DataSourceContextHolder.useSlave();
+                DbGuardianDataSourceConfig.DataSourceContextHolder.useSlave();
             } else {
-                // 写操作使用主库
-                DataSourceContextHolder.useMaster();
+                DbGuardianDataSourceConfig.DataSourceContextHolder.useMaster();
             }
 
             return joinPoint.proceed();
         } finally {
-            // 清除数据源上下文
-            DataSourceContextHolder.clear();
+            DbGuardianDataSourceConfig.DataSourceContextHolder.clear();
         }
     }
 

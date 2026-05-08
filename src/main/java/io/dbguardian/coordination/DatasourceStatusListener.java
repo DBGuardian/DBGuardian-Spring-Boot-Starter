@@ -1,7 +1,9 @@
-package com.erp.config;
+package io.dbguardian.coordination;
 
+import io.dbguardian.config.DbGuardianDataSourceConfig;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.listener.ChannelTopic;
@@ -13,21 +15,23 @@ import javax.annotation.PostConstruct;
 /**
  * Redis 消息监听器
  * 监听数据源状态变更消息，实现多后端实例间的状态同步
+ * 
+ * 基于 business-workflow-erp-java 项目的 DatasourceStatusListener 实现
  */
 @Slf4j
 @Component
 public class DatasourceStatusListener implements MessageListener {
 
-    private static final String STATUS_CHANNEL = "erp:datasource:status:channel";
+    private static final String STATUS_CHANNEL = "dbguardian:datasource:status:channel";
 
-    @Autowired
+    @Autowired(required = false)
     private RedisMessageListenerContainer container;
 
-    @Autowired
+    @Autowired(required = false)
     private DatasourceCoordinationService coordinationService;
 
-    @Autowired
-    private DataSourceConfig dataSourceConfig;
+    @Autowired(required = false)
+    private DbGuardianDataSourceConfig dataSourceConfig;
 
     /**
      * 订阅者注册标记（避免重复订阅）
@@ -47,6 +51,13 @@ public class DatasourceStatusListener implements MessageListener {
      */
     private void subscribe() {
         if (subscribed) {
+            return;
+        }
+
+        // 检查所有依赖是否都可用
+        if (container == null || coordinationService == null || dataSourceConfig == null) {
+            log.warn("数据源状态监听器依赖不完整，跳过订阅。RedisContainer: {}, CoordinationService: {}, DataSourceConfig: {}",
+                    container != null, coordinationService != null, dataSourceConfig != null);
             return;
         }
 
@@ -78,6 +89,10 @@ public class DatasourceStatusListener implements MessageListener {
 
     @Override
     public void onMessage(Message message, byte[] pattern) {
+        if (coordinationService == null) {
+            return;
+        }
+
         try {
             String channel = new String(message.getChannel());
             String body = new String(message.getBody());
@@ -102,6 +117,10 @@ public class DatasourceStatusListener implements MessageListener {
      * 处理状态变更
      */
     private void handleStatusChange(String status) {
+        if (dataSourceConfig == null) {
+            return;
+        }
+
         if (DatasourceCoordinationService.STATUS_NORMAL.equals(status)) {
             log.info("收到通知：系统恢复正常，使用主库");
             dataSourceConfig.syncToNormalMode();

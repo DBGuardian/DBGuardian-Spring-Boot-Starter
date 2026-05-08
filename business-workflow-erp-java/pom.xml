@@ -63,11 +63,13 @@
             <version>8.0.33</version>
         </dependency>
 
-        <!-- Source: https://mvnrepository.com/artifact/org.apache.shardingsphere/shardingsphere-jdbc-core-spring-boot-starter -->
+        <!-- DBGuardian 读写分离 -->
         <dependency>
-            <groupId>org.apache.shardingsphere</groupId>
-            <artifactId>shardingsphere-jdbc-core-spring-boot-starter</artifactId>
-            <version>5.2.1</version>
+            <groupId>io.dbguardian</groupId>
+            <artifactId>dbguardian-spring-boot-starter</artifactId>
+            <version>1.0.0</version>
+            <scope>system</scope>
+            <systemPath>${project.basedir}/../target/dbguardian-spring-boot-starter-1.0.0.jar</systemPath>
         </dependency>
 
         <!-- Redis -->
