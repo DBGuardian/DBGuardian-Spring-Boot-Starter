@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.finance.FinanceMapper">
+
+    <!-- 根据合同号获取可结算的入库单列表 -->
+    <select id="selectAvailableWarehousingByContract" resultType="com.erp.controller.finance.dto.AvailableWarehousingVO">
+        SELECT DISTINCT
+            w.入库单编号 as warehousingId,
+            w.入库单号 as warehousingCode,
+            w.入库时间 as warehousingTime,
+            w.仓管员编码 as warehouseKeeperId,
+            e.员工姓名 as warehouseKeeperName,
+            w.入库备注 as remark,
+            d.运输单号 as dispatchCode,
+            pn.收运通知单号 as pickupNoticeCode,
+            c.企业名称 as customerName,
+            (SELECT SUM(wi.实际收运数量) FROM WAREHOUSING_WASTE_ITEM wi WHERE wi.入库单编号 = w.入库单编号) as totalWeight
+        FROM WAREHOUSING w
+        LEFT JOIN EMPLOYEE e ON w.仓管员编码 = e.员工编码
+        LEFT JOIN DISPATCH_ORDER d ON w.收运运输单号 = d.运输单号
+        LEFT JOIN PICKUP_NOTICE pn ON d.收运通知单号 = pn.收运通知单号
+        LEFT JOIN CUSTOMER c ON pn.客户编码 = c.客户编码
+        <!-- 主要关联路径：通过运输单关联 -->
+        WHERE (
+            pn.合同号 = #{contractCode}
+            OR
+            <!-- 备选关联路径：通过入库危废明细追溯到收运通知单 -->
+            w.入库单编号 IN (
+                SELECT DISTINCT wi.入库单编号
+                FROM WAREHOUSING_WASTE_ITEM wi
+                LEFT JOIN PICKUP_NOTICE_ITEM pni ON wi.收运通知单明细编号 = pni.转移废物明细编号
+                LEFT JOIN PICKUP_NOTICE pn2 ON pni.收运通知单号 = pn2.收运通知单号
+                WHERE pn2.合同号 = #{contractCode}
+            )
+        )
+          AND w.入库单编号 NOT IN (
+            SELECT DISTINCT CAST(swd.关联来源单号 AS UNSIGNED)
+            FROM SETTLEMENT_WASTE_DETAIL swd
+            WHERE swd.关联来源类型 = 'WAREHOUSING'
+              AND swd.关联来源单号 IS NOT NULL
+              AND swd.关联来源单号 REGEXP '^[0-9]+$'
+          )
+          AND w.状态 = '待结算'
+        ORDER BY w.入库时间 DESC
+    </select>
+
+    <!-- 根据入库单号列表获取入库单危废明细 -->
+    <select id="selectWarehousingWasteDetailsByCodes" resultType="com.erp.controller.finance.dto.WarehousingWasteDetailVO">
+        SELECT DISTINCT
+            wwi.入库危废明细编号 as warehousingWasteItemId,
+            wwi.入库单编号 as warehousingId,
+            w.入库单号 as warehousingCode,
+            w.入库时间 as warehousingTime,
+            wwi.废物名称 as wasteName,
+            wwi.废物代码 as wasteCode,
+            wwi.危险特性 as hazardousFeatures,
+            wwi.废物形态 as form,
+            wwi.基本计量单位 as basicUnit,
+            wwi.辅助计量单位 as auxiliaryUnit,
+            wwi.是否启用辅助核算 as enableAuxiliaryAccounting,
+            wwi.实际收运数量 as quantity,
+            wwi.实际收运辅助数量 as auxiliaryQuantity,
+            CASE
+                WHEN pni.转移废物明细编号 IS NOT NULL THEN
+                    (SELECT CASE
+                        WHEN cwi.付款方 = '甲方' THEN '甲方'
+                        ELSE '乙方'
+                    END
+                    FROM CONTRACT_WASTE_ITEM cwi
+                    WHERE cwi.危废条目编号 = pni.危废条目编号
+                    AND cwi.合同条目编号 IN (
+                        SELECT 合同条目编号 FROM CONTRACT_ITEM
+                        WHERE 合同编号 = (
+                            SELECT 合同号 FROM PICKUP_NOTICE
+                            WHERE 收运通知单号 = pni.收运通知单号
+                        )
+                    )
+                    LIMIT 1)
+                ELSE '乙方'
+            END as payer,
+            wwi.差异原因 as remark
+        FROM WAREHOUSING_WASTE_ITEM wwi
+        LEFT JOIN WAREHOUSING w ON wwi.入库单编号 = w.入库单编号
+        LEFT JOIN PICKUP_NOTICE_ITEM pni ON wwi.收运通知单明细编号 = pni.转移废物明细编号
+        WHERE w.入库单号 IN
+            <foreach item="code" collection="warehousingCodes" open="(" separator="," close=")">
+                #{code}
+            </foreach>
+        ORDER BY wwi.入库单编号, wwi.入库危废明细编号
+    </select>
+
+    <!-- 根据入库单号列表查询入库单详情 -->
+    <select id="selectWarehousingDetailsByCodes" resultType="com.erp.controller.finance.dto.AvailableWarehousingVO">
+        SELECT DISTINCT
+            w.入库单编号 as warehousingId,
+            w.入库单号 as warehousingCode,
+            w.入库时间 as warehousingTime,
+            w.仓管员编码 as warehouseKeeperId,
+            e.员工姓名 as warehouseKeeperName,
+            w.入库备注 as remark,
+            d.运输单号 as dispatchCode,
+            pn.收运通知单号 as pickupNoticeCode,
+            c.企业名称 as customerName,
+            (SELECT SUM(wi.实际收运数量) FROM WAREHOUSING_WASTE_ITEM wi WHERE wi.入库单编号 = w.入库单编号) as totalWeight
+        FROM WAREHOUSING w
+        LEFT JOIN EMPLOYEE e ON w.仓管员编码 = e.员工编码
+        LEFT JOIN DISPATCH_ORDER d ON w.收运运输单号 = d.运输单号
+        LEFT JOIN PICKUP_NOTICE pn ON d.收运通知单号 = pn.收运通知单号
+        LEFT JOIN CUSTOMER c ON pn.客户编码 = c.客户编码
+        WHERE w.入库单号 IN
+            <foreach item="code" collection="warehousingCodes" open="(" separator="," close=")">
+                #{code}
+            </foreach>
+        ORDER BY w.入库时间 DESC
+    </select>
+
+    <!-- 根据合同号查询运输记录 -->
+    <select id="selectTransportRecordsByContract" resultType="com.erp.controller.finance.dto.TransportRecordDTO">
+        SELECT
+            dt.运输单编号 as transportId,
+            dt.运输单号 as transportCode,
+            DATE_FORMAT(dt.实际起运时间, '%Y-%m-%d %H:%i:%s') as transportTime,
+            pni.废物代码 as wasteCode,
+            pni.废物名称 as wasteName,
+            pni.计划转移数量 as transportQuantity,
+            pni.基本计量单位 as unit,
+            pni.是否启用辅助核算 as enableAuxiliaryAccounting,
+            pni.辅助数量 as auxiliaryQuantity,
+            pni.辅助计量单位 as auxiliaryUnit
+        FROM DISPATCH_ORDER dt
+        INNER JOIN PICKUP_NOTICE pn ON dt.收运通知单号 = pn.收运通知单号
+        INNER JOIN PICKUP_NOTICE_ITEM pni ON pn.收运通知单号 = pni.收运通知单号
+        INNER JOIN CONTRACT c ON pn.合同号 = c.合同号
+        WHERE c.合同号 = #{contractCode}
+          AND dt.实际起运时间 IS NOT NULL  -- 只查询已实际起运的运输单
+          AND NOT EXISTS (  -- 排除已被结算单引用的运输单
+              SELECT 1 FROM SETTLEMENT_REFERENCE sr
+              INNER JOIN SETTLEMENT s ON sr.结算单编号 = s.结算单编号
+              WHERE sr.关联来源类型 = 'transport'
+                AND sr.关联来源单号 = dt.运输单号
+                AND s.状态 IN ('草稿', '待审核', '已审核', '已收款')  -- 只排除仍在有效期内的引用
+          )
+        ORDER BY dt.实际起运时间 DESC, dt.运输单编号 DESC
+    </select>
+
+    <!-- 获取入库危废明细（含合同匹配信息） - 后端统一处理入库数据与合同数据的匹配 -->
+    <!-- 匹配条件：危废条目编号 + 废物名称 + 废物代码 -->
+    <select id="selectWarehousingWasteDetailsWithContract"
+            resultType="com.erp.controller.finance.dto.WarehousingWasteDetailWithContractVO">
+        SELECT
+            -- ========== 入库明细字段 ==========
+            wwi.入库危废明细编号 AS warehousingWasteItemId,
+            wwi.入库单编号 AS warehousingId,
+            w.入库单号 AS warehousingCode,
+            w.入库时间 AS warehousingTime,
+            wwi.废物名称 AS wasteName,
+            wwi.废物代码 AS wasteCode,
+            wwi.废物形态 AS form,
+            wwi.基本计量单位 AS basicUnit,
+            wwi.是否启用辅助核算 AS enableAuxiliaryAccounting,
+            wwi.实际收运数量 AS quantity,
+            wwi.实际收运辅助数量 AS auxiliaryQuantity,
+            wwi.辅助计量单位 AS auxiliaryUnit,
+            wwi.差异原因 AS remark,
+            NULL AS warehousingPayer,
+
+            -- ========== 合同匹配信息 ==========
+            cwi.合同条目编号 AS contractItemId,
+            cwi.合同危废明细编号 AS contractWasteItemId,
+            ci.报价模式 AS quotationMode,
+
+            -- ========== 付款方（根据报价模式取值）==========
+            CASE
+                WHEN ci.报价模式 = '总价包干' THEN ci.付款方
+                WHEN ci.报价模式 = '按量结算' AND cwi.付款方 IS NOT NULL AND cwi.付款方 != '' THEN cwi.付款方
+                ELSE '乙方'
+            END AS payer,
+
+            -- ========== 合同危废条目信息 ==========
+            cwi.计划转移数量 AS planQuantity,
+            cwi.计量单位 AS measurementUnit,
+            cwi.单价 AS unitPrice,
+            cwi.金额 AS amount,
+            cwi.计价方案 AS pricingPlan,
+            cwi.低价备注 AS lowPriceRemark,
+            cwi.是否启用辅助核算 AS auxiliaryEnabled,
+            cwi.辅助计量单位 AS auxiliaryMeasurementUnit,
+            cwi.辅助单位每基础单位数量 AS auxiliaryPerBasicUnit,
+            cwi.辅助数量 AS auxiliaryQuantity2,
+            cwi.辅助单价 AS auxiliaryUnitPrice,
+
+            -- ========== 危废条目信息（通过危废条目编号关联）==========
+            hwc.废物类别 AS wasteCategory
+
+        -- 第一步：通过入库单号关联入库表
+        FROM WAREHOUSING w
+        INNER JOIN WAREHOUSING_WASTE_ITEM wwi ON w.入库单编号 = wwi.入库单编号
+
+        -- 第二步：通过合同编号和合同号关联合同主表（双重校验，确保数据精准）
+        INNER JOIN CONTRACT c ON c.合同编号 = #{contractId} AND c.合同号 = #{contractNo}
+
+        -- 第三步：关联合同条目
+        INNER JOIN CONTRACT_ITEM ci ON ci.合同编号 = c.合同编号
+
+        -- 第四步：关联合同危废明细（双重匹配策略）
+        -- 匹配优先级：
+        -- 1. 优先：危废条目编号精确匹配（当入库单危废条目编号非空时）
+        -- 2. 兜底：废物代码匹配（当入库单危废条目编号为空时）
+        -- 注意：废物代码从 wwi.废物代码 直接获取，CONTRACT_WASTE_ITEM 通过危废条目编号关联 HAZARDOUS_WASTE_ITEM 获取废物代码
+        LEFT JOIN CONTRACT_WASTE_ITEM cwi ON
+            cwi.合同条目编号 = ci.合同条目编号
+            AND (
+                -- 优先：危废条目编号匹配（入库单危废条目编号非空时）
+                (wwi.危废条目编号 IS NOT NULL AND wwi.危废条目编号 != '' 
+                 AND wwi.危废条目编号 = cwi.危废条目编号)
+                OR
+                -- 兜底：废物代码匹配（入库单危废条目编号为空时）
+                -- 通过子查询：用入库单的废物代码查找对应的危废条目编号，再与合同危废明细匹配
+                (wwi.危废条目编号 IS NULL OR wwi.危废条目编号 = '')
+                AND wwi.废物代码 IS NOT NULL
+                AND cwi.危废条目编号 = (
+                    SELECT hwi.条目编号 
+                    FROM HAZARDOUS_WASTE_ITEM hwi 
+                    WHERE hwi.废物代码 = wwi.废物代码 
+                    LIMIT 1
+                )
+            )
+
+        -- 第五步：关联危废条目表获取废物类别（双重兜底策略）
+        -- 优先：通过合同危废明细的危废条目编号关联
+        -- 兜底：当合同危废明细的危废条目编号为空时，通过入库单的废物代码直接关联
+        LEFT JOIN HAZARDOUS_WASTE_ITEM hwi ON (
+            hwi.条目编号 = cwi.危废条目编号
+            OR
+            (cwi.危废条目编号 IS NULL OR cwi.危废条目编号 = '')
+            AND hwi.废物代码 = wwi.废物代码
+        )
+
+        -- 第六步：关联废物类别表获取废物类别
+        LEFT JOIN HAZARDOUS_WASTE_CATEGORY hwc ON hwi.废物类别编号 = hwc.废物类别编号
+
+        -- ========== 双层锁定条件 ==========
+        -- 通过 OR 条件组合：每个入库单的入库单号和入库单编号必须同时匹配
+        <where>
+            <foreach item="item" collection="warehousingList" separator=" OR ">
+                (w.入库单号 = #{item.warehousingCode} AND w.入库单编号 = #{item.warehousingId})
+            </foreach>
+        </where>
+
+        ORDER BY w.入库时间 DESC, wwi.入库危废明细编号
+    </select>
+
+    <!-- 查询已结算入库量（总价包干专用） -->
+    <select id="selectSettledQuantityByContractAndWasteCode"
+            resultType="com.erp.controller.finance.dto.SettledQuantityDTO">
+        SELECT
+            COALESCE(SUM(swd.基本结算数量), 0) AS settledBasicQuantity,
+            COALESCE(SUM(swd.辅助结算数量), 0) AS settledAuxiliaryQuantity
+        FROM SETTLEMENT s
+        INNER JOIN SETTLEMENT_WASTE_DETAIL swd ON s.结算单编号 = swd.结算单编号
+        INNER JOIN SETTLEMENT_WASTE_INFO swi ON swd.明细编号 = swi.结算明细编号
+        WHERE s.合同编号 = #{contractId} AND s.合同号 = #{contractNo}
+            AND s.状态 IN ('已审核', '已结算', '已收款', '部分收款')
+            AND swi.废物代码 = #{wasteCode}
+        GROUP BY s.合同编号, s.合同号
+    </select>
+
+</mapper>

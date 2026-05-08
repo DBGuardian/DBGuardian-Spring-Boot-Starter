@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.production.TransferManifestMapper">
+
+    <!-- 主表结果映射 -->
+    <resultMap id="BaseResultMap" type="com.erp.entity.production.TransferManifest">
+        <id     column="联单编号"           property="manifestId"/>
+        <result column="广东省联单号"         property="gdManifestNo"/>
+        <result column="国家联单号"           property="nationalManifestNo"/>
+        <result column="产生单位"            property="producer"/>
+        <result column="产废单位所属市"        property="producerCity"/>
+        <result column="产废单位所属区"        property="producerDistrict"/>
+        <result column="产废单位所属镇"        property="producerTown"/>
+        <result column="发运人"              property="shipper"/>
+        <result column="接收人"              property="receiver"/>
+        <result column="接收单位"            property="receivingUnit"/>
+        <result column="接收单位所属省"        property="receivingProvince"/>
+        <result column="接收单位所属市"        property="receivingCity"/>
+        <result column="接收单位所属区"        property="receivingDistrict"/>
+        <result column="许可证编号"           property="licenseNo"/>
+        <result column="接收单位处理意见"       property="receivingOpinion"/>
+        <result column="接收日期"            property="receivingDate"/>
+        <result column="处置方式大类"          property="disposalCategory"/>
+        <result column="处置方式小类"          property="disposalSubcategory"/>
+        <result column="车牌号"              property="licensePlate"/>
+        <result column="承运人"              property="carrier"/>
+        <result column="运输单位"            property="transportUnit"/>
+        <result column="运输开始时间"          property="transportStartTime"/>
+        <result column="运输结束时间"          property="transportEndTime"/>
+        <result column="计划转移时间"          property="plannedTransferDate"/>
+        <result column="当前阶段"            property="currentStage"/>
+        <result column="补录类型"            property="supplementType"/>
+        <result column="是否存在重大差异"       property="hasMajorDifference"/>
+        <result column="重大差异简述"          property="majorDifferenceDesc"/>
+        <result column="接收企业备注"          property="receivingRemark"/>
+        <result column="是否作废"            property="isVoided"/>
+        <result column="是否删除"            property="isDeleted"/>
+        <result column="创建时间"            property="createTime"/>
+        <result column="更新时间"            property="updateTime"/>
+        <result column="version"            property="version"/>
+    </resultMap>
+
+    <!-- 列表查询结果映射（直接映射到 TransferManifestPageResponse，含 PDF 文件连表字段） -->
+    <resultMap id="PageResultMap" type="com.erp.controller.production.dto.TransferManifestPageResponse">
+        <id     column="联单编号"           property="联单编号"/>
+        <result column="广东省联单号"         property="广东省联单号"/>
+        <result column="国家联单号"           property="国家联单号"/>
+        <result column="产生单位"            property="产生单位"/>
+        <result column="产废单位所属市"        property="产废单位所属市"/>
+        <result column="产废单位所属区"        property="产废单位所属区"/>
+        <result column="产废单位所属镇"        property="产废单位所属镇"/>
+        <result column="发运人"              property="发运人"/>
+        <result column="接收人"              property="接收人"/>
+        <result column="接收单位"            property="接收单位"/>
+        <result column="接收单位所属省"        property="接收单位所属省"/>
+        <result column="接收单位所属市"        property="接收单位所属市"/>
+        <result column="接收单位所属区"        property="接收单位所属区"/>
+        <result column="许可证编号"           property="许可证编号"/>
+        <result column="接收单位处理意见"       property="接收单位处理意见"/>
+        <result column="接收日期"            property="接收日期"/>
+        <result column="处置方式大类"          property="处置方式大类"/>
+        <result column="处置方式小类"          property="处置方式小类"/>
+        <result column="车牌号"              property="车牌号"/>
+        <result column="承运人"              property="承运人"/>
+        <result column="运输单位"            property="运输单位"/>
+        <result column="运输开始时间"          property="运输开始时间"/>
+        <result column="运输结束时间"          property="运输结束时间"/>
+        <result column="计划转移时间"          property="计划转移时间"/>
+        <result column="当前阶段"            property="当前阶段"/>
+        <result column="补录类型"            property="补录类型"/>
+        <result column="是否存在重大差异"       property="是否存在重大差异"/>
+        <result column="重大差异简述"          property="重大差异简述"/>
+        <result column="接收企业备注"          property="接收企业备注"/>
+        <result column="是否作废"            property="是否作废"/>
+        <result column="PDF文件编号"          property="PDF文件编号"/>
+        <result column="创建时间"            property="创建时间"/>
+        <!-- PDF 文件连表字段（FILE 表），用于点击查看时直接预览，无需额外查询 -->
+        <result column="文件名称"            property="PDF文件名称"/>
+        <result column="存储类型"            property="PDF存储类型"/>
+        <result column="本地存储路径"         property="PDF本地存储路径"/>
+        <result column="对象键"             property="PDF对象键"/>
+        <result column="访问URL"             property="PDF访问URL"/>
+    </resultMap>
+
+    <!-- 分页查询主表（不含子项，LEFT JOIN FILE 表获取 PDF 文件信息，避免点击查看时再次查询） -->
+    <select id="selectManifestPage" resultMap="PageResultMap">
+        SELECT
+            tm.`联单编号`,
+            tm.`广东省联单号`,
+            tm.`国家联单号`,
+            tm.`产生单位`,
+            tm.`产废单位所属市`,
+            tm.`产废单位所属区`,
+            tm.`产废单位所属镇`,
+            tm.`发运人`,
+            tm.`接收人`,
+            tm.`接收单位`,
+            tm.`接收单位所属省`,
+            tm.`接收单位所属市`,
+            tm.`接收单位所属区`,
+            tm.`许可证编号`,
+            tm.`接收单位处理意见`,
+            DATE_FORMAT(tm.`接收日期`, '%Y-%m-%d')           AS `接收日期`,
+            tm.`处置方式大类`,
+            tm.`处置方式小类`,
+            tm.`车牌号`,
+            tm.`承运人`,
+            tm.`运输单位`,
+            DATE_FORMAT(tm.`运输开始时间`, '%Y-%m-%d %H:%i:%s') AS `运输开始时间`,
+            DATE_FORMAT(tm.`运输结束时间`, '%Y-%m-%d %H:%i:%s') AS `运输结束时间`,
+            DATE_FORMAT(tm.`计划转移时间`, '%Y-%m-%d')          AS `计划转移时间`,
+            tm.`当前阶段`,
+            tm.`补录类型`,
+            tm.`是否存在重大差异`,
+            tm.`重大差异简述`,
+            tm.`接收企业备注`,
+            tm.`是否作废`,
+            tm.`PDF文件编号`,
+            DATE_FORMAT(tm.`创建时间`, '%Y-%m-%d %H:%i:%s')    AS `创建时间`,
+            f.`文件名称`       AS `文件名称`,
+            f.`存储类型`       AS `存储类型`,
+            f.`本地存储路径`   AS `本地存储路径`,
+            f.`对象键`        AS `对象键`,
+            f.`访问URL`       AS `访问URL`
+        FROM TRANSFER_MANIFEST tm
+        LEFT JOIN FILE f ON f.`文件编号` = tm.`PDF文件编号` AND f.`文件状态` = '正常'
+        WHERE tm.`是否删除` = 0
+        <if test="广东省联单号 != null and 广东省联单号 != ''">
+            AND tm.`广东省联单号` LIKE CONCAT('%', #{广东省联单号}, '%')
+        </if>
+        <if test="国家联单号 != null and 国家联单号 != ''">
+            AND tm.`国家联单号` LIKE CONCAT('%', #{国家联单号}, '%')
+        </if>
+        <if test="产生单位 != null and 产生单位 != ''">
+            AND tm.`产生单位` LIKE CONCAT('%', #{产生单位}, '%')
+        </if>
+        <if test="接收单位 != null and 接收单位 != ''">
+            AND tm.`接收单位` LIKE CONCAT('%', #{接收单位}, '%')
+        </if>
+        <if test="车牌号 != null and 车牌号 != ''">
+            AND tm.`车牌号` LIKE CONCAT('%', #{车牌号}, '%')
+        </if>
+        <if test="当前阶段 != null and 当前阶段 != ''">
+            AND tm.`当前阶段` = #{当前阶段}
+        </if>
+        <if test="计划转移开始 != null and 计划转移开始 != ''">
+            AND tm.`计划转移时间` &gt;= #{计划转移开始}
+        </if>
+        <if test="计划转移结束 != null and 计划转移结束 != ''">
+            AND tm.`计划转移时间` &lt;= #{计划转移结束}
+        </if>
+        <choose>
+            <when test="sortField != null and sortField != '' and sortOrder != null">
+                ORDER BY tm.${sortField} ${sortOrder}
+            </when>
+            <otherwise>
+                ORDER BY tm.`联单编号` ASC
+            </otherwise>
+        </choose>
+    </select>
+
+    <!-- 根据广东省联单号查询（用于导入时去重） -->
+    <select id="selectByGdManifestNo" resultMap="BaseResultMap">
+        SELECT
+            `联单编号`, `广东省联单号`, `国家联单号`, `产生单位`,
+            `产废单位所属市`, `产废单位所属区`, `产废单位所属镇`, `发运人`,
+            `接收人`, `接收单位`, `接收单位所属省`, `接收单位所属市`,
+            `接收单位所属区`, `许可证编号`, `接收单位处理意见`, `接收日期`,
+            `处置方式大类`, `处置方式小类`, `车牌号`, `承运人`,
+            `运输单位`, `运输开始时间`, `运输结束时间`, `计划转移时间`,
+            `当前阶段`, `补录类型`, `是否存在重大差异`, `重大差异简述`,
+            `接收企业备注`, `是否作废`, `PDF文件编号`, `是否删除`, `创建时间`, `更新时间`, `version`
+        FROM TRANSFER_MANIFEST
+        WHERE `广东省联单号` = #{gdManifestNo}
+          AND `是否删除` = 0
+        LIMIT 1
+    </select>
+
+    <!-- 根据数字串匹配联单号（PDF 导入时使用）
+         传入从 PDF 页面提取的纯数字串，广东省联单号或国家联单号中包含该数字串即视为匹配 -->
+    <select id="selectByManifestNoDigits" resultMap="BaseResultMap">
+        SELECT
+            `联单编号`, `广东省联单号`, `国家联单号`, `PDF文件编号`, `是否删除`
+        FROM TRANSFER_MANIFEST
+        WHERE `是否删除` = 0
+          AND (
+              `广东省联单号` LIKE CONCAT('%', #{digits}, '%')
+           OR `国家联单号`  LIKE CONCAT('%', #{digits}, '%')
+          )
+        LIMIT 10
+    </select>
+
+    <!-- 批量更新联单 PDF 文件编号（CASE WHEN 单条 SQL，避免多语句执行问题）-->
+    <update id="batchUpdatePdfFileId">
+        UPDATE TRANSFER_MANIFEST
+        SET `PDF文件编号` = CASE `联单编号`
+            <foreach collection="list" item="item">
+            WHEN #{item.manifestId} THEN #{item.pdfFileId}
+            </foreach>
+            END,
+            `更新时间` = NOW()
+        WHERE `联单编号` IN
+        <foreach collection="list" item="item" open="(" separator="," close=")">
+            #{item.manifestId}
+        </foreach>
+        AND `是否删除` = 0
+    </update>
+
+    <!-- 批量插入主表，useGeneratedKeys 回填 manifestId -->
+    <insert id="batchInsert" useGeneratedKeys="true" keyProperty="manifestId" keyColumn="联单编号">
+        INSERT INTO TRANSFER_MANIFEST (
+            `广东省联单号`, `国家联单号`,
+            `产生单位`, `产废单位所属市`, `产废单位所属区`, `产废单位所属镇`, `发运人`,
+            `接收人`, `接收单位`, `接收单位所属省`, `接收单位所属市`, `接收单位所属区`,
+            `许可证编号`, `接收单位处理意见`, `接收日期`,
+            `处置方式大类`, `处置方式小类`,
+            `车牌号`, `承运人`, `运输单位`, `运输开始时间`, `运输结束时间`,
+            `计划转移时间`, `当前阶段`, `补录类型`,
+            `是否存在重大差异`, `重大差异简述`, `接收企业备注`, `是否作废`,
+            `是否删除`, `创建时间`, `更新时间`, `version`
+        ) VALUES
+        <foreach collection="list" item="m" separator=",">
+        (
+            #{m.gdManifestNo}, #{m.nationalManifestNo},
+            #{m.producer}, #{m.producerCity}, #{m.producerDistrict}, #{m.producerTown}, #{m.shipper},
+            #{m.receiver}, #{m.receivingUnit}, #{m.receivingProvince}, #{m.receivingCity}, #{m.receivingDistrict},
+            #{m.licenseNo}, #{m.receivingOpinion}, #{m.receivingDate},
+            #{m.disposalCategory}, #{m.disposalSubcategory},
+            #{m.licensePlate}, #{m.carrier}, #{m.transportUnit}, #{m.transportStartTime}, #{m.transportEndTime},
+            #{m.plannedTransferDate}, #{m.currentStage}, #{m.supplementType},
+            #{m.hasMajorDifference}, #{m.majorDifferenceDesc}, #{m.receivingRemark}, #{m.isVoided},
+            0, NOW(), NOW(), 0
+        )
+        </foreach>
+    </insert>
+
+    <!-- 批量查询已存在的广东省联单号 -->
+    <select id="selectExistingGdManifestNos" resultType="string">
+        SELECT `广东省联单号`
+        FROM TRANSFER_MANIFEST
+        WHERE `是否删除` = 0
+          AND `广东省联单号` IN
+        <foreach collection="gdNos" item="no" open="(" separator="," close=")">
+            #{no}
+        </foreach>
+    </select>
+
+    <!-- PDF 导入：一次批量 LIKE 匹配所有数字串（OR 展开） -->
+    <select id="selectByManifestNoDigitsBatch" resultMap="BaseResultMap">
+        SELECT `联单编号`, `广东省联单号`, `国家联单号`, `PDF文件编号`, `是否删除`
+        FROM TRANSFER_MANIFEST
+        WHERE `是否删除` = 0
+          AND (
+        <foreach collection="digitsList" item="d" separator=" OR ">
+            `广东省联单号` LIKE CONCAT('%', #{d}, '%')
+            OR `国家联单号`  LIKE CONCAT('%', #{d}, '%')
+        </foreach>
+          )
+    </select>
+
+    <select id="selectExportRows" resultType="com.erp.controller.production.dto.TransferManifestExportRow">
+        SELECT
+            tm.`联单编号` AS `联单编号`,
+            tm.`广东省联单号` AS `广东省联单号`,
+            tm.`国家联单号` AS `国家联单号`,
+            tm.`产生单位` AS `产生单位`,
+            tm.`产废单位所属市` AS `产废单位所属市`,
+            tm.`产废单位所属区` AS `产废单位所属区`,
+            tm.`产废单位所属镇` AS `产废单位所属镇`,
+            tm.`发运人` AS `发运人`,
+            tm.`接收人` AS `接收人`,
+            tm.`接收单位` AS `接收单位`,
+            tm.`接收单位所属省` AS `接收单位所属省`,
+            tm.`接收单位所属市` AS `接收单位所属市`,
+            tm.`接收单位所属区` AS `接收单位所属区`,
+            tm.`许可证编号` AS `许可证编号`,
+            tm.`接收单位处理意见` AS `接收单位处理意见`,
+            DATE_FORMAT(tm.`接收日期`, '%Y-%m-%d') AS `接收日期`,
+            tm.`处置方式大类` AS `处置方式大类`,
+            tm.`处置方式小类` AS `处置方式小类`,
+            tm.`车牌号` AS `车牌号`,
+            tm.`承运人` AS `承运人`,
+            tm.`运输单位` AS `运输单位`,
+            DATE_FORMAT(tm.`运输开始时间`, '%Y-%m-%d %H:%i:%s') AS `运输开始时间`,
+            DATE_FORMAT(tm.`运输结束时间`, '%Y-%m-%d %H:%i:%s') AS `运输结束时间`,
+            DATE_FORMAT(tm.`计划转移时间`, '%Y-%m-%d') AS `计划转移时间`,
+            tm.`当前阶段` AS `当前阶段`,
+            tm.`补录类型` AS `补录类型`,
+            tm.`是否存在重大差异` AS `是否存在重大差异`,
+            tm.`重大差异简述` AS `重大差异简述`,
+            tm.`接收企业备注` AS `接收企业备注`,
+            tm.`是否作废` AS `是否作废`,
+            tm.`PDF文件编号` AS `PDF文件编号`,
+            tmi.`子项编号` AS `子项编号`,
+            tmi.`废物类别` AS `废物类别`,
+            tmi.`废物代码` AS `废物代码`,
+            tmi.`废物名称` AS `废物名称`,
+            tmi.`废物形态` AS `废物形态`,
+            tmi.`包装方式` AS `包装方式`,
+            tmi.`计划数量` AS `计划数量`,
+            tmi.`确认数量` AS `确认数量`,
+            tmi.`计量单位` AS `计量单位`
+        FROM TRANSFER_MANIFEST tm
+        LEFT JOIN TRANSFER_MANIFEST_ITEM tmi
+          ON tm.`联单编号` = tmi.`联单编号`
+         AND tmi.`是否删除` = 0
+        WHERE tm.`是否删除` = 0
+        <if test="manifestIds != null and manifestIds.size() > 0">
+            AND tm.`联单编号` IN
+            <foreach collection="manifestIds" item="id" open="(" separator="," close=")">
+                #{id}
+            </foreach>
+        </if>
+        ORDER BY tm.`创建时间` DESC, tm.`联单编号` DESC, tmi.`子项编号` ASC
+    </select>
+
+</mapper>

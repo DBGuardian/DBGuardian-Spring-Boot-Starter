@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.contract.OutOfScopeServiceMapper">
+
+    <!-- 更新单个价外服务（动态字段更新） -->
+    <update id="updateSelectiveById">
+        UPDATE OUT_OF_SCOPE_SERVICE
+        <set>
+            <if test="businessType != null">关联业务类型 = #{businessType},</if>
+            <if test="businessId != null">关联业务单号 = #{businessId},</if>
+            <if test="project != null">项目 = #{project},</if>
+            <if test="spec != null">规格型号 = #{spec},</if>
+            <if test="unit != null">单位 = #{unit},</if>
+            <if test="plannedQuantity != null">计划数量 = #{plannedQuantity},</if>
+            <if test="contractUnitPrice != null">合同单价 = #{contractUnitPrice},</if>
+            <if test="settledQuantity != null">对账结算数量 = #{settledQuantity},</if>
+            <if test="settledUnitPrice != null">对账结算单价 = #{settledUnitPrice},</if>
+            <if test="settledAmount != null">对账结算金额 = #{settledAmount},</if>
+            <if test="status != null">状态 = #{status},</if>
+            <if test="locked != null">是否锁定 = #{locked},</if>
+            <if test="lockedAt != null">锁定时间 = #{lockedAt},</if>
+            <if test="lockedBy != null">锁定人编码 = #{lockedBy},</if>
+            <if test="lockReason != null">锁定原因 = #{lockReason},</if>
+            <if test="remark != null">备注 = #{remark},</if>
+            更新时间 = NOW(),
+            <if test="updatedBy != null">更新人编码 = #{updatedBy}</if>
+            <if test="updatedBy == null">更新人编码 = NULL</if>
+        </set>
+        WHERE 价外费用编号 = #{outOfScopeServiceId}
+    </update>
+
+    <!-- 根据业务类型和业务ID查询价外服务 -->
+    <select id="selectByBusiness" resultType="com.erp.entity.contract.OutOfScopeService">
+        SELECT * FROM OUT_OF_SCOPE_SERVICE
+        WHERE 关联业务类型 = #{businessType}
+        AND 关联业务单号 = #{businessId}
+        ORDER BY 创建时间 DESC
+    </select>
+
+    <!-- 根据业务类型和业务ID删除价外服务 -->
+    <delete id="deleteByBusiness">
+        DELETE FROM OUT_OF_SCOPE_SERVICE
+        WHERE 关联业务类型 = #{businessType}
+        AND 关联业务单号 = #{businessId}
+    </delete>
+
+    <!-- 根据业务类型和业务ID计算总金额 -->
+    <select id="selectTotalAmountByBusiness" resultType="java.math.BigDecimal">
+        SELECT COALESCE(SUM(对账结算金额), 0)
+        FROM OUT_OF_SCOPE_SERVICE
+        WHERE 关联业务类型 = #{businessType}
+        AND 关联业务单号 = #{businessId}
+    </select>
+
+</mapper>

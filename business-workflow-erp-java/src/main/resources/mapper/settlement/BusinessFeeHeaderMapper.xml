@@ -1,0 +1,333 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.settlement.BusinessFeeHeaderMapper">
+
+    <resultMap id="BusinessFeePageResultMap" type="com.erp.controller.settlement.dto.BusinessFeeListItemDTO">
+        <id property="businessSeq" column="业务序号"/>
+        <result property="businessCode" column="业务单号"/>
+        <result property="businessContractId" column="业务合同编号"/>
+        <result property="businessContractNo" column="业务合同单号"/>
+        <result property="serviceCompanyName" column="服务公司名称"/>
+        <result property="salespersonId" column="业务员编码"/>
+        <result property="salespersonName" column="业务员姓名"/>
+        <result property="settlementType" column="结算类型"/>
+        <result property="settlementAmount" column="业务结算金额"/>
+        <result property="receivedAmount" column="已收金额"/>
+        <result property="status" column="状态"/>
+        <result property="creatorId" column="制单人编码"/>
+        <result property="creatorName" column="制单人名称"/>
+        <result property="createTime" column="创建时间"/>
+        <result property="auditorName" column="审核人姓名"/>
+        <result property="auditTime" column="审核时间"/>
+        <result property="auditOpinion" column="审核意见"/>
+    </resultMap>
+
+    <resultMap id="BusinessFeeDetailResultMap" type="com.erp.controller.settlement.dto.BusinessFeeDetailDTO">
+        <id property="businessSeq" column="业务序号"/>
+        <result property="businessCode" column="业务单号"/>
+        <result property="businessContractId" column="业务合同编号"/>
+        <result property="serviceCompanyName" column="服务公司名称"/>
+        <result property="settlementType" column="结算类型"/>
+        <result property="settlementAmount" column="业务结算金额"/>
+        <result property="receivedAmount" column="已收金额"/>
+        <result property="paymentDate" column="支付日期"/>
+        <result property="status" column="状态"/>
+        <result property="creatorName" column="制单人名称"/>
+        <result property="createTime" column="创建时间"/>
+        <result property="auditTime" column="审核时间"/>
+        <result property="auditOpinion" column="审核意见"/>
+        <result property="remark" column="备注"/>
+        <result property="isLocked" column="是否锁定"/>
+        <result property="lockTime" column="锁定时间"/>
+        <collection property="settlementRels" column="业务序号" select="selectSettlementRelsByBusinessSeq"/>
+        <collection property="businessFeeItems" column="业务序号" select="selectBusinessFeeItems"/>
+    </resultMap>
+
+    <resultMap id="BusinessFeeItemWasteInfoNestedResultMap" type="com.erp.controller.settlement.dto.BusinessFeeItemDTO$BusinessFeeItemWasteInfoDTO">
+        <id property="wasteInfoId" column="危废信息编号"/>
+        <result property="rowOrder" column="行内顺序"/>
+        <result property="sourceWasteDetailIds" column="来源危废明细编号" typeHandler="com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler"/>
+        <result property="wasteCategory" column="废物类别"/>
+        <result property="wasteCode" column="废物代码"/>
+        <result property="wasteName" column="废物名称"/>
+    </resultMap>
+
+    <resultMap id="BusinessFeeItemResultMap" type="com.erp.controller.settlement.dto.BusinessFeeItemDTO">
+        <id property="itemSeq" column="明细序号"/>
+        <result property="businessSeq" column="业务序号"/>
+        <result property="paymentDirection" column="收付款方向"/>
+        <result property="settlementMode" column="结算模式"/>
+        <result property="baseUnitPrice" column="底价单价"/>
+        <result property="valuableUnitPrice" column="有价类单价"/>
+        <result property="worthlessUnitPrice" column="无价类单价"/>
+        <result property="contractBasePrice" column="合同底价"/>
+        <result property="valuableContractBasePrice" column="有价类合同底价"/>
+        <result property="worthlessContractBasePrice" column="无价类合同底价"/>
+        <result property="intermediaryFee" column="中间费"/>
+        <result property="rebateRatio" column="返点比例"/>
+        <result property="payableAmount" column="应付金额"/>
+        <result property="valuablePayableAmount" column="有价类应付金额"/>
+        <result property="worthlessPayableAmount" column="无价类应付金额"/>
+        <result property="valuableWeight" column="有价重量"/>
+        <result property="worthlessWeight" column="无价重量"/>
+        <result property="cargoSettlementAmount" column="货款结算金额"/>
+        <result property="enableAuxAccounting" column="是否启用辅助核算"/>
+        <result property="basicQuantity" column="基本核算数量"/>
+        <result property="auxiliaryQuantity" column="辅助核算数量"/>
+        <result property="auxiliaryUnit" column="辅助计量单位"/>
+        <result property="creatorId" column="创建人编码"/>
+        <result property="createTime" column="创建时间"/>
+        <result property="updaterId" column="更新人编码"/>
+        <result property="updateTime" column="更新时间"/>
+        <collection property="wasteInfoList" column="明细序号" select="selectWasteInfoListByItemSeq"/>
+    </resultMap>
+
+    <resultMap id="SettlementRelInfoResultMap" type="com.erp.controller.settlement.dto.BusinessFeeDetailDTO$SettlementRelInfoDTO">
+        <id property="relId" column="关联编号"/>
+        <result property="settlementId" column="危废结算单编号"/>
+        <result property="settlementCode" column="危废结算单单号"/>
+        <result property="settlementAmount" column="结算金额"/>
+        <result property="status" column="状态"/>
+        <result property="remark" column="备注"/>
+    </resultMap>
+
+    <!-- 业务费分页查询（连表查询）
+         变更说明（2025-03-27）：
+           - 删除 CONTRACT/SETTLEMENT 连表（改由关联表 BUSINESS_FEE_SETTLEMENT_REL 获取危废结算单列表）
+           - 改为关联 BUSINESS_CONTRACT 获取业务合同信息
+           - settlementRels 列表通过 selectSettlementRelsByBusinessSeqs 单独查询后在 Service 层组装
+    -->
+    <select id="selectBusinessFeePage" resultMap="BusinessFeePageResultMap">
+        SELECT
+            bf.业务序号,
+            bf.业务单号,
+            bf.业务合同编号,
+            bf.业务合同单号,
+            bf.服务公司名称,
+            bf.业务员编码,
+            bf.业务员姓名,
+            bf.结算类型,
+            bf.业务结算金额,
+            bf.已收金额,
+            bf.状态,
+            bf.制单人编码,
+            bf.制单人名称,
+            bf.创建时间,
+            e2.员工姓名 AS 审核人姓名,
+            bf.审核时间,
+            bf.审核意见
+        FROM BUSINESS_FEE_HEADER bf
+        LEFT JOIN EMPLOYEE e2 ON bf.审核人编码 = e2.员工编码
+        <where>
+            <if test="query.settlementType != null and query.settlementType != ''">
+                AND bf.结算类型 = #{query.settlementType}
+            </if>
+            <if test="query.status != null and query.status != ''">
+                AND bf.状态 = #{query.status}
+            </if>
+            <if test="query.businessCode != null and query.businessCode != ''">
+                AND bf.业务单号 LIKE CONCAT('%', #{query.businessCode}, '%')
+            </if>
+            <if test="query.independentOnly != null and query.independentOnly">
+                AND bf.业务合同编号 IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM BUSINESS_FEE_SETTLEMENT_REL rel
+                    WHERE rel.业务序号 = bf.业务序号
+                )
+            </if>
+            <if test="query.businessContractId != null">
+                AND bf.业务合同编号 = #{query.businessContractId}
+            </if>
+            <if test="query.dangerousSettlementId != null">
+                AND EXISTS (
+                    SELECT 1 FROM BUSINESS_FEE_SETTLEMENT_REL rel
+                    WHERE rel.业务序号 = bf.业务序号
+                      AND rel.危废结算单编号 = #{query.dangerousSettlementId}
+                )
+            </if>
+            <if test="query.salespersonId != null">
+                AND bf.业务员编码 = #{query.salespersonId}
+            </if>
+            <if test="query.creatorId != null">
+                AND bf.制单人编码 = #{query.creatorId}
+            </if>
+        </where>
+        ORDER BY bf.创建时间 DESC
+    </select>
+
+    <!-- 查询业务费详情核心聚合（主表 + 关联结算单 + 明细 + 明细危废子表） -->
+    <select id="selectBusinessFeeDetail" resultMap="BusinessFeeDetailResultMap">
+        SELECT
+            bf.业务序号,
+            bf.业务单号,
+            bf.业务合同编号,
+            bf.业务合同单号,
+            bf.服务公司名称,
+            bf.业务员编码,
+            bf.业务员姓名,
+            bf.结算类型,
+            bf.业务结算金额,
+            bf.已收金额,
+            bf.支付日期,
+            bf.状态,
+            bf.制单人编码,
+            bf.制单人名称,
+            bf.创建时间,
+            bf.审核人编码,
+            bf.审核时间,
+            bf.审核意见,
+            bf.备注,
+            bf.是否锁定,
+            bf.锁定时间,
+            bf.锁定人编码
+        FROM BUSINESS_FEE_HEADER bf
+        WHERE bf.业务序号 = #{businessSeq}
+    </select>
+
+    <!-- 查询业务费明细列表（核心详情聚合子查询） -->
+    <select id="selectBusinessFeeItems" resultMap="BusinessFeeItemResultMap">
+        SELECT
+            明细序号,
+            业务序号,
+            收付款方向,
+            结算模式,
+            底价单价,
+            有价类单价,
+            无价类单价,
+            合同底价,
+            有价类合同底价,
+            无价类合同底价,
+            中间费,
+            返点比例,
+            应付金额,
+            有价类应付金额,
+            无价类应付金额,
+            有价重量,
+            无价重量,
+            货款结算金额,
+            是否启用辅助核算,
+            基本核算数量,
+            辅助核算数量,
+            辅助计量单位,
+            创建人编码,
+            创建时间,
+            更新人编码,
+            更新时间
+        FROM BUSINESS_FEE_ITEM
+        WHERE 业务序号 = #{businessSeq}
+        ORDER BY 明细序号 ASC
+    </select>
+
+    <!-- 查询关联的危废结算单列表（核心详情聚合子查询） -->
+    <select id="selectSettlementRelsByBusinessSeq"
+            resultMap="SettlementRelInfoResultMap">
+        SELECT
+            rel.关联编号,
+            rel.危废结算单编号,
+            rel.危废结算单单号,
+            s.结算金额,
+            s.状态,
+            rel.备注
+        FROM BUSINESS_FEE_SETTLEMENT_REL rel
+        LEFT JOIN SETTLEMENT s ON rel.危废结算单编号 = s.结算单编号
+        WHERE rel.业务序号 = #{businessSeq}
+        ORDER BY rel.关联编号 ASC
+    </select>
+
+    <!-- 查询业务费明细危废信息子表（核心详情聚合子查询） -->
+    <select id="selectWasteInfoListByItemSeq" resultMap="BusinessFeeItemWasteInfoNestedResultMap">
+        SELECT
+            危废信息编号,
+            明细序号,
+            行内顺序,
+            来源危废明细编号,
+            废物类别,
+            废物代码,
+            废物名称
+        FROM BUSINESS_FEE_ITEM_WASTE_INFO
+        WHERE 明细序号 = #{itemSeq}
+        ORDER BY 行内顺序 ASC
+    </select>
+
+    <!-- 查询入库明细列表（通过关联的危废结算单获取） -->
+    <select id="selectWarehousingItems" resultType="com.erp.controller.settlement.dto.WarehousingItemDTO">
+        SELECT
+            wi.入库危废明细编号  AS itemId,
+            w.入库单号           AS warehousingNo,
+            wi.废物名称          AS wasteName,
+            wi.废物代码          AS wasteCode,
+            wi.废物形态          AS wasteCategory,
+            wi.有价类重量        AS valuableWeight,
+            wi.无价类重量        AS worthlessWeight,
+            wi.是否启用辅助核算  AS enableAuxAccounting,
+            wi.计划收运数量      AS basicQuantity,
+            wi.辅助数量          AS auxiliaryQuantity,
+            wi.辅助计量单位      AS auxiliaryUnit,
+            swd.明细编号         AS settlementWasteDetailId
+        FROM WAREHOUSING_WASTE_ITEM wi
+        LEFT JOIN WAREHOUSING w ON wi.入库单编号 = w.入库单编号
+        LEFT JOIN SETTLEMENT_WASTE_DETAIL swd
+            ON w.入库单号 = swd.关联来源单号
+        LEFT JOIN SETTLEMENT_WASTE_INFO swi ON swd.明细编号 = swi.结算明细编号
+            AND wi.废物代码 = swi.废物代码
+        WHERE swd.结算单编号 = #{settlementId}
+        ORDER BY wi.入库危废明细编号 ASC
+    </select>
+
+    <!-- 批量查询危废结算单关联入库单聚合数据
+         修正说明（2026-04-06）：
+           1. 聚合粒度仍按 废物类别+废物代码+废物名称，满足前端导入时的危废匹配需求
+           2. 结算字段（辅助核算、单位、单价）保持取分组内首条来源明细，用于展示/默认回填
+           3. 新增返回 sourceWasteDetailIds，保留每个聚合项对应的全部来源危废明细编号，供前端写入 BUSINESS_FEE_ITEM_WASTE_INFO.来源危废明细编号
+    -->
+    <select id="selectWarehousingAggregateBySettlementIds"
+            resultType="com.erp.controller.settlement.dto.SettlementWasteAggregateItemDTO">
+        SELECT
+            grp.废物类别                          AS wasteCategory,
+            grp.废物代码                          AS wasteCode,
+            grp.废物名称                          AS wasteName,
+            grp.sourceWasteDetailIds              AS sourceWasteDetailIds,
+            grp.valuableWeight                    AS valuableWeight,
+            grp.worthlessWeight                   AS worthlessWeight,
+            (COALESCE(grp.valuableWeight, 0)
+             + COALESCE(grp.worthlessWeight, 0))  AS totalWeight,
+            grp.basicSettlementQuantity           AS basicSettlementQuantity,
+            grp.auxiliarySettlementQuantity       AS auxiliarySettlementQuantity,
+            grp.settlementAmount                  AS settlementAmount,
+            first_swd.是否启用辅助核算            AS enableAuxiliaryAccounting,
+            first_swd.基本计量单位                AS basicUnit,
+            first_swd.辅助计量单位                AS auxiliaryUnit,
+            first_swd.结算单价                    AS settlementUnitPrice
+        FROM (
+            SELECT
+                swi.废物类别,
+                swi.废物代码,
+                swi.废物名称,
+                GROUP_CONCAT(DISTINCT swd.明细编号 ORDER BY swd.明细编号 SEPARATOR ',') AS sourceWasteDetailIds,
+                SUM(COALESCE(wi.有价类重量,  0))         AS valuableWeight,
+                SUM(COALESCE(wi.无价类重量,  0))         AS worthlessWeight,
+                SUM(COALESCE(swd.基本结算数量, 0))       AS basicSettlementQuantity,
+                SUM(COALESCE(swd.辅助结算数量, 0))       AS auxiliarySettlementQuantity,
+                SUM(COALESCE(swd.金额, 0))               AS settlementAmount,
+                MIN(swd.明细编号)                        AS firstDetailId
+            FROM SETTLEMENT_WASTE_DETAIL swd
+            INNER JOIN SETTLEMENT_WASTE_INFO swi ON swd.明细编号 = swi.结算明细编号
+            INNER JOIN WAREHOUSING w
+                ON swd.关联来源单号 = w.入库单号
+            INNER JOIN WAREHOUSING_WASTE_ITEM wi
+                ON wi.入库单编号 = w.入库单编号
+               AND wi.废物代码   = swi.废物代码
+            WHERE swd.结算单编号 IN
+            <foreach collection="settlementIds" item="id" open="(" separator="," close=")">
+                #{id}
+            </foreach>
+            AND swd.关联来源类型 = 'warehousing'
+            GROUP BY swi.废物类别, swi.废物代码, swi.废物名称
+        ) grp
+        LEFT JOIN SETTLEMENT_WASTE_DETAIL first_swd
+            ON first_swd.明细编号 = grp.firstDetailId
+        ORDER BY grp.废物类别, grp.废物代码
+    </select>
+
+</mapper>

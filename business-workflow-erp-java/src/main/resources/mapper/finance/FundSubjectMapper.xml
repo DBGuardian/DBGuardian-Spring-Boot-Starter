@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.finance.FundSubjectMapper">
+
+    <!-- 会计科目分页查询（关联创建人/更新人），支持模糊查询与字段排序 -->
+    <select id="selectFundSubjectPage" resultType="com.erp.controller.finance.dto.FundSubjectListItemResponse">
+        SELECT
+            fs.`科目编号`       AS subjectId,
+            fs.`科目编码`       AS subjectCode,
+            fs.`科目名称`       AS subjectName,
+            fs.`上级科目编码`   AS parentSubjectCode,
+            fs.`科目级次`       AS subjectLevel,
+            fs.`全科目名称`     AS fullSubjectName,
+            fs.`科目类别`       AS subjectCategory,
+            fs.`余额方向`       AS balanceDirection,
+            fs.`是否为现金科目` AS isCashSubject,
+            fs.`辅助核算`       AS auxiliaryAccounting,
+            fs.`数量核算`       AS quantityAccounting,
+            fs.`外币核算`       AS foreignCurrencyAccounting,
+            fs.`是否启用`       AS enabled,
+            fs.`version`        AS version,
+            fs.`创建时间`       AS createTime,
+            fs.`更新时间`       AS updateTime,
+            fs.`备注`           AS remark,
+            e1.`员工姓名`       AS createUserName,
+            e2.`员工姓名`       AS updateUserName
+        FROM FUND_SUBJECT fs
+                 LEFT JOIN EMPLOYEE e1 ON fs.`创建人编码` = e1.`员工编码`
+                 LEFT JOIN EMPLOYEE e2 ON fs.`更新人编码` = e2.`员工编码`
+        <where>
+            <if test="query.subjectCode != null and query.subjectCode != ''">
+                AND fs.`科目编码` LIKE CONCAT('%', #{query.subjectCode}, '%')
+            </if>
+            <if test="query.subjectName != null and query.subjectName != ''">
+                AND fs.`科目名称` LIKE CONCAT('%', #{query.subjectName}, '%')
+            </if>
+            <if test="query.subjectCategory != null and query.subjectCategory != ''">
+                AND fs.`科目类别` = #{query.subjectCategory}
+            </if>
+            <if test="query.enabled != null">
+                AND fs.`是否启用` = #{query.enabled}
+            </if>
+        </where>
+        <choose>
+            <when test="query.sortField != null and query.sortField != ''">
+                ORDER BY
+                <choose>
+                    <when test="query.sortField == 'subjectCode'">
+                        fs.`科目编码`
+                    </when>
+                    <when test="query.sortField == 'subjectName'">
+                        fs.`科目名称`
+                    </when>
+                    <when test="query.sortField == 'subjectCategory'">
+                        fs.`科目类别`
+                    </when>
+                    <when test="query.sortField == 'balanceDirection'">
+                        fs.`余额方向`
+                    </when>
+                    <when test="query.sortField == 'enabled'">
+                        fs.`是否启用`
+                    </when>
+                    <when test="query.sortField == 'createTime'">
+                        fs.`创建时间`
+                    </when>
+                    <when test="query.sortField == 'updateTime'">
+                        fs.`更新时间`
+                    </when>
+                    <otherwise>
+                        fs.`创建时间`
+                    </otherwise>
+                </choose>
+                <if test="query.sortOrder != null and query.sortOrder == 'desc'">
+                    DESC
+                </if>
+                <if test="query.sortOrder == null or query.sortOrder == 'asc'">
+                    ASC
+                </if>
+            </when>
+            <otherwise>
+                ORDER BY fs.`创建时间` DESC
+            </otherwise>
+        </choose>
+    </select>
+
+    <!-- 查询启用的会计科目选项列表 -->
+    <select id="selectFundSubjectOptions" resultType="com.erp.controller.finance.dto.FundSubjectOption">
+        SELECT
+            fs.`科目编号`       AS subjectId,
+            fs.`科目编码`       AS subjectCode,
+            fs.`科目名称`       AS subjectName,
+            fs.`科目类别`       AS subjectCategory
+        FROM FUND_SUBJECT fs
+        WHERE fs.`是否启用` = 1
+        ORDER BY fs.`科目编码` ASC
+    </select>
+
+    <!-- 根据科目编码查询科目信息 -->
+    <select id="selectBySubjectCode" resultType="com.erp.entity.finance.FundSubject">
+        SELECT * FROM FUND_SUBJECT WHERE `科目编码` = #{subjectCode}
+    </select>
+
+    <!-- 批量更新科目状态 -->
+    <update id="batchUpdateEnabled">
+        UPDATE FUND_SUBJECT
+        SET
+            `是否启用` = #{enabled},
+            `更新时间` = NOW(),
+            `更新人编码` = #{updateUserId}
+        WHERE `科目编号` IN
+        <foreach item="subjectId" collection="subjectIds" open="(" separator="," close=")">
+            #{subjectId}
+        </foreach>
+    </update>
+
+    <!-- 查询子科目列表 -->
+    <select id="selectChildSubjects" resultType="com.erp.entity.finance.FundSubject">
+        SELECT * FROM FUND_SUBJECT
+        WHERE `上级科目编码` = #{parentSubjectCode}
+        ORDER BY `科目编码` ASC
+    </select>
+
+    <!-- 递归查询所有子科目ID（使用递归CTE） -->
+    <select id="selectAllChildSubjectIds" resultType="java.lang.Long">
+        WITH RECURSIVE child_subjects AS (
+            SELECT `科目编号`
+            FROM FUND_SUBJECT
+            WHERE `科目编码` = #{parentSubjectCode}
+            UNION ALL
+            SELECT fs.`科目编号`
+            FROM FUND_SUBJECT fs
+            INNER JOIN child_subjects cs ON fs.`上级科目编码` = cs.`科目编码`
+        )
+        SELECT `科目编号` FROM child_subjects WHERE `科目编码` != #{parentSubjectCode}
+    </select>
+
+    <!-- 查询科目树形结构数据 -->
+    <select id="selectSubjectTree" resultType="com.erp.controller.finance.dto.FundSubjectListItemResponse">
+        SELECT
+            fs.`科目编号`       AS subjectId,
+            fs.`科目编码`       AS subjectCode,
+            fs.`科目名称`       AS subjectName,
+            fs.`上级科目编码`   AS parentSubjectCode,
+            fs.`科目级次`       AS subjectLevel,
+            fs.`全科目名称`     AS fullSubjectName,
+            fs.`科目类别`       AS subjectCategory,
+            fs.`余额方向`       AS balanceDirection,
+            fs.`是否为现金科目` AS isCashSubject,
+            fs.`辅助核算`       AS auxiliaryAccounting,
+            fs.`数量核算`       AS quantityAccounting,
+            fs.`外币核算`       AS foreignCurrencyAccounting,
+            fs.`是否启用`       AS enabled,
+            fs.`version`        AS version,
+            fs.`创建时间`       AS createTime,
+            fs.`更新时间`       AS updateTime,
+            e1.`员工姓名`       AS createUserName,
+            e2.`员工姓名`       AS updateUserName
+        FROM FUND_SUBJECT fs
+                 LEFT JOIN EMPLOYEE e1 ON fs.`创建人编码` = e1.`员工编码`
+                 LEFT JOIN EMPLOYEE e2 ON fs.`更新人编码` = e2.`员工编码`
+        ORDER BY fs.`科目编码` ASC
+    </select>
+
+</mapper>

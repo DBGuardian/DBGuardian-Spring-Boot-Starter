@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.report.InoutDetailMapper">
+
+  <!-- 查询入库明细数据（JOIN多表） -->
+  <select id="queryInboundDetail" resultType="com.erp.controller.report.dto.InoutDetailRow">
+    SELECT 
+        ROW_NUMBER() OVER (ORDER BY wwi.入库危废明细编号) AS sequenceNo,
+        '经营' AS category,
+        c.合同号 AS contractNo,
+        c.乙方名称 AS partyName,
+        e.员工姓名 AS businessPerson,
+        COALESCE(v.车牌号, ws.车号) AS plateNumber,
+        ws.总磅单号 AS weighingSlipNo,
+        COALESCE(hwc.废物类别, hwc2.废物类别) AS wasteCategory,
+        wwi.废物代码 AS wasteCode,
+        wwi.废物名称 AS wasteName,
+        '吨' AS unit,
+        wwi.实际收运数量 AS inboundQty,
+        0 AS outboundQty,
+        s.当前重量 AS stockQty,
+        w.入库备注 AS remark
+    FROM WAREHOUSING_WASTE_ITEM wwi
+    LEFT JOIN WAREHOUSING w ON wwi.入库单编号 = w.入库单编号
+    LEFT JOIN WEIGHING_SLIP ws ON w.总磅单号 = ws.总磅单号
+    LEFT JOIN VEHICLE v ON ws.车号 = v.车牌号
+    LEFT JOIN PICKUP_NOTICE_ITEM pni ON wwi.收运通知单明细编号 = pni.转移废物明细编号
+    LEFT JOIN PICKUP_NOTICE pn ON pni.收运通知单号 = pn.收运通知单号
+    LEFT JOIN CONTRACT c ON pn.合同号 = c.合同号
+    LEFT JOIN EMPLOYEE e ON c.创建人编码 = e.员工编码
+    LEFT JOIN HAZARDOUS_WASTE_ITEM hwi ON wwi.危废条目编号 = hwi.条目编号
+    LEFT JOIN HAZARDOUS_WASTE_CATEGORY hwc ON hwi.废物类别编号 = hwc.废物类别编号
+    LEFT JOIN HAZARDOUS_WASTE_ITEM hwi2 ON wwi.废物代码 = hwi2.废物代码
+    LEFT JOIN HAZARDOUS_WASTE_CATEGORY hwc2 ON hwi2.废物类别编号 = hwc2.废物类别编号
+    LEFT JOIN STOCK s ON wwi.废物代码 = s.废物代码 AND wwi.废物名称 = s.废物名称
+    WHERE w.状态 != '已删除'
+    <if test="category != null and category != ''">
+      AND '经营' = #{category}
+    </if>
+    <if test="contractNo != null and contractNo != ''">
+      AND c.合同号 LIKE CONCAT('%', #{contractNo}, '%')
+    </if>
+    <if test="wasteCode != null and wasteCode != ''">
+      AND wwi.废物代码 LIKE CONCAT('%', #{wasteCode}, '%')
+    </if>
+    <if test="wasteName != null and wasteName != ''">
+      AND wwi.废物名称 LIKE CONCAT('%', #{wasteName}, '%')
+    </if>
+    <if test="dateStart != null and dateStart != ''">
+      AND DATE(w.创建时间) >= #{dateStart}
+    </if>
+    <if test="dateEnd != null and dateEnd != ''">
+      AND DATE(w.创建时间) &lt;= #{dateEnd}
+    </if>
+    ORDER BY wwi.入库危废明细编号
+  </select>
+
+  <!-- 查询出库数据并按废物代码+名称分组 -->
+  <!-- 注：OUTBOUND_WASTE_ITEM表尚未创建，暂时返回空结果 -->
+  <select id="queryOutboundGrouped" resultType="java.util.Map">
+    SELECT 
+        '' AS wasteKey,
+        0 AS outboundQty
+    WHERE 1 = 0
+  </select>
+
+  <!-- 查询所有入库明细（不分页，用于导出） -->
+  <select id="queryAllInboundDetail" resultType="com.erp.controller.report.dto.InoutDetailRow">
+    SELECT 
+        ROW_NUMBER() OVER (ORDER BY wwi.入库危废明细编号) AS sequenceNo,
+        '经营' AS category,
+        c.合同号 AS contractNo,
+        c.乙方名称 AS partyName,
+        e.员工姓名 AS businessPerson,
+        COALESCE(v.车牌号, ws.车号) AS plateNumber,
+        ws.总磅单号 AS weighingSlipNo,
+        COALESCE(hwc.废物类别, hwc2.废物类别) AS wasteCategory,
+        wwi.废物代码 AS wasteCode,
+        wwi.废物名称 AS wasteName,
+        '吨' AS unit,
+        wwi.实际收运数量 AS inboundQty,
+        0 AS outboundQty,
+        s.当前重量 AS stockQty,
+        w.入库备注 AS remark
+    FROM WAREHOUSING_WASTE_ITEM wwi
+    LEFT JOIN WAREHOUSING w ON wwi.入库单编号 = w.入库单编号
+    LEFT JOIN WEIGHING_SLIP ws ON w.总磅单号 = ws.总磅单号
+    LEFT JOIN VEHICLE v ON ws.车号 = v.车牌号
+    LEFT JOIN PICKUP_NOTICE_ITEM pni ON wwi.收运通知单明细编号 = pni.转移废物明细编号
+    LEFT JOIN PICKUP_NOTICE pn ON pni.收运通知单号 = pn.收运通知单号
+    LEFT JOIN CONTRACT c ON pn.合同号 = c.合同号
+    LEFT JOIN EMPLOYEE e ON c.创建人编码 = e.员工编码
+    LEFT JOIN HAZARDOUS_WASTE_ITEM hwi ON wwi.危废条目编号 = hwi.条目编号
+    LEFT JOIN HAZARDOUS_WASTE_CATEGORY hwc ON hwi.废物类别编号 = hwc.废物类别编号
+    LEFT JOIN HAZARDOUS_WASTE_ITEM hwi2 ON wwi.废物代码 = hwi2.废物代码
+    LEFT JOIN HAZARDOUS_WASTE_CATEGORY hwc2 ON hwi2.废物类别编号 = hwc2.废物类别编号
+    LEFT JOIN STOCK s ON wwi.废物代码 = s.废物代码 AND wwi.废物名称 = s.废物名称
+    WHERE w.状态 != '已删除'
+    <if test="category != null and category != ''">
+      AND '经营' = #{category}
+    </if>
+    <if test="contractNo != null and contractNo != ''">
+      AND c.合同号 LIKE CONCAT('%', #{contractNo}, '%')
+    </if>
+    <if test="wasteCode != null and wasteCode != ''">
+      AND wwi.废物代码 LIKE CONCAT('%', #{wasteCode}, '%')
+    </if>
+    <if test="wasteName != null and wasteName != ''">
+      AND wwi.废物名称 LIKE CONCAT('%', #{wasteName}, '%')
+    </if>
+    <if test="dateStart != null and dateStart != ''">
+      AND DATE(w.创建时间) >= #{dateStart}
+    </if>
+    <if test="dateEnd != null and dateEnd != ''">
+      AND DATE(w.创建时间) &lt;= #{dateEnd}
+    </if>
+    ORDER BY wwi.入库危废明细编号
+  </select>
+
+</mapper>

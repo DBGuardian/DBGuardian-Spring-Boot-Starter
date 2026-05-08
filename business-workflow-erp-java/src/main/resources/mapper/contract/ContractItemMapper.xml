@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.contract.ContractItemMapper">
+
+    <resultMap id="ContractItemResultMap" type="com.erp.entity.contract.ContractItem">
+        <id column="合同条目编号" property="contractItemId"/>
+        <result column="合同编号" property="contractId"/>
+        <result column="报价条目编号" property="quotationItemId"/>
+        <result column="报价模式" property="quotationMode"/>
+        <result column="付款方" property="payer"/>
+        <result column="计价方案" property="pricingPlan"/>
+        <result column="低价备注" property="floorPriceRemark"/>
+        <result column="小计摘要" property="subtotalSummary"/>
+        <result column="创建时间" property="createTime"/>
+        <result column="更新时间" property="updateTime"/>
+    </resultMap>
+
+    <resultMap id="ContractItemWithWasteItemsResultMap" type="com.erp.controller.contract.dto.ContractItemWithWasteItems">
+        <id column="合同条目编号" property="contractItemId"/>
+        <result column="合同编号" property="contractId"/>
+        <result column="报价条目编号" property="quotationItemId"/>
+        <result column="报价模式" property="quotationMode"/>
+        <result column="付款方" property="payer"/>
+        <result column="计价方案" property="pricingPlan"/>
+        <result column="低价备注" property="floorPriceRemark"/>
+        <result column="小计摘要" property="subtotalSummary"/>
+        <result column="创建时间" property="createTime"/>
+        <result column="更新时间" property="updateTime"/>
+        <!-- 关联的危废条目明细 -->
+        <collection property="wasteItems" ofType="com.erp.entity.contract.ContractWasteItem">
+            <id column="合同危废明细编号" property="contractWasteItemId"/>
+            <result column="合同条目编号" property="contractItemId"/>
+            <result column="报价危废明细编号" property="quotationWasteItemId"/>
+            <result column="危废条目编号" property="hazardousWasteItemId"/>
+                <!-- 直接从危废条目表获取废物代码，避免后续批量查询 -->
+                <result column="明细废物代码" property="wasteCode"/>
+            <result column="废物名称" property="hazardousWaste"/>
+            <result column="废物形态" property="form"/>
+            <result column="计量单位" property="unit"/>
+            <result column="计划转移数量" property="plannedQuantity"/>
+            <result column="是否启用辅助核算" property="enableAuxiliaryAccounting"/>
+            <result column="辅助计量单位" property="auxUnit"/>
+            <result column="辅助单位每基础单位数量" property="auxPerBase"/>
+            <result column="辅助数量" property="auxQuantity"/>
+            <result column="辅助单价" property="auxUnitPrice"/>
+            <result column="单价" property="unitPrice"/>
+            <result column="金额" property="amount"/>
+            <!-- 使用别名避免与父表列名冲突 -->
+            <result column="明细计价方案" property="pricingPlan"/>
+            <result column="明细付款方" property="payer"/>
+            <result column="明细低价备注" property="floorPriceRemark"/>
+            <result column="明细创建时间" property="createTime"/>
+            <result column="明细更新时间" property="updateTime"/>
+        </collection>
+    </resultMap>
+
+    <select id="selectByContractId" resultMap="ContractItemResultMap">
+        SELECT
+            合同条目编号,
+            合同编号,
+            报价条目编号,
+            报价模式,
+            付款方,
+            计价方案,
+            低价备注,
+            小计摘要,
+            创建时间,
+            更新时间
+        FROM CONTRACT_ITEM
+        WHERE 合同编号 = #{contractId}
+        ORDER BY 创建时间 ASC
+    </select>
+
+    <select id="selectByContractIds" resultMap="ContractItemResultMap">
+        SELECT
+            合同条目编号,
+            合同编号,
+            报价条目编号,
+            报价模式,
+            付款方,
+            计价方案,
+            低价备注,
+            小计摘要,
+            创建时间,
+            更新时间
+        FROM CONTRACT_ITEM
+        WHERE 合同编号 IN
+        <foreach item="id" collection="contractIds" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        ORDER BY 创建时间 ASC
+    </select>
+
+    <delete id="deleteByContractId">
+        DELETE FROM CONTRACT_ITEM
+        WHERE 合同编号 = #{contractId}
+    </delete>
+
+    <select id="selectReferencedQuotationItemIds" resultType="java.lang.Integer">
+        SELECT DISTINCT 报价条目编号
+        FROM CONTRACT_ITEM
+        WHERE 报价条目编号 IS NOT NULL
+        AND 报价条目编号 IN
+        <foreach collection="quotationItemIds" item="itemId" open="(" separator="," close=")">
+            #{itemId}
+        </foreach>
+    </select>
+
+    <select id="selectItemsWithWasteItemsByContractId" resultMap="ContractItemWithWasteItemsResultMap">
+        SELECT
+            ci.合同条目编号,
+            ci.合同编号,
+            ci.报价条目编号,
+            ci.报价模式,
+            ci.付款方,
+            ci.计价方案,
+            ci.低价备注,
+            ci.小计摘要,
+            ci.创建时间,
+            ci.更新时间,
+            cwi.合同危废明细编号,
+            cwi.合同条目编号,
+            cwi.报价危废明细编号,
+            cwi.危废条目编号,
+            cwi.废物名称,
+            cwi.废物形态,
+            cwi.计量单位,
+            cwi.计划转移数量,
+            cwi.是否启用辅助核算,
+            cwi.辅助计量单位,
+            cwi.辅助单位每基础单位数量,
+            cwi.辅助数量,
+            cwi.辅助单价,
+            cwi.单价,
+            cwi.金额,
+            cwi.计价方案 AS 明细计价方案,
+            cwi.付款方 AS 明细付款方,
+            cwi.低价备注 AS 明细低价备注,
+            cwi.创建时间 as 明细创建时间,
+            cwi.更新时间 as 明细更新时间
+        FROM CONTRACT_ITEM ci
+        LEFT JOIN CONTRACT_WASTE_ITEM cwi ON ci.合同条目编号 = cwi.合同条目编号
+        LEFT JOIN HAZARDOUS_WASTE_ITEM hwi ON cwi.危废条目编号 = hwi.条目编号
+        WHERE ci.合同编号 = #{contractId}
+        ORDER BY ci.创建时间 ASC, cwi.创建时间 ASC
+    </select>
+
+</mapper>
+
+
+

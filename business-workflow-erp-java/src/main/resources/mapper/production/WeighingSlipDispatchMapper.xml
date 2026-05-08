@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.production.WeighingSlipDispatchMapper">
+
+    <!-- 根据总磅单编号查询关联的运输单号列表 -->
+    <select id="selectDispatchCodesByWeighingSlipId" resultType="java.lang.String">
+        SELECT `运输单号`
+        FROM WEIGHING_SLIP_DISPATCH
+        WHERE `总磅单编号` = #{weighingSlipId}
+        ORDER BY `创建时间` ASC
+    </select>
+
+    <!-- 根据运输单号查询是否已关联总磅单 -->
+    <select id="countByDispatchCode" resultType="java.lang.Integer">
+        SELECT COUNT(1)
+        FROM WEIGHING_SLIP_DISPATCH
+        WHERE `运输单号` = #{dispatchCode}
+    </select>
+
+</mapper>
+
+
+

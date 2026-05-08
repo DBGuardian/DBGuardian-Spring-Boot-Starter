@@ -1,0 +1,174 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+  tomcat:
+    max-swallow-size: 500MB
+    connection-timeout: 300000
+
+spring:
+  application:
+    name: business-workflow-erp
+  
+  # MVC配置（解决Knife4j兼容性问题）
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
+
+  # Jackson配置：LocalDateTime 序列化为字符串
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+      indent-output: false
+    default-property-inclusion: non_null
+    property-naming-strategy: LOWER_CAMEL_CASE
+  
+  # 主库数据源配置
+  datasource:
+    master:
+      url: jdbc:mysql://106.55.104.229:3306/business-workflow-erp?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      username: root
+      password: Ry260104.Ry260104.
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      hikari:
+        maximum-pool-size: 20
+        minimum-idle: 5
+        connection-timeout: 30000
+        idle-timeout: 600000
+        max-lifetime: 1800000
+    # 从库数据源配置
+    slave:
+      url: jdbc:mysql://42.194.239.94:3306/business-workflow-erp?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      username: root
+      password: Ry260104.Ry260104.
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      hikari:
+        maximum-pool-size: 20
+        minimum-idle: 5
+        connection-timeout: 30000
+        idle-timeout: 600000
+        max-lifetime: 1800000
+    # 主从复制配置
+    replication:
+      master-host: 106.55.104.229
+      master-port: 3306
+      master-user: repl
+      master-password: Ry260104.Ry260104.
+      auto-reconnect: true
+    # 降级启动配置
+    allow-degraded-startup: true  # 允许数据库不可用时降级启动
+
+  # Redis配置
+  redis:
+    host: 106.55.104.229
+    port: 6379
+    password: Ry260104.Ry260104.
+    database: 0
+    timeout: 10000ms
+    lettuce:
+      pool:
+        max-active: 50
+        max-wait: 3000ms
+        max-idle: 20
+        min-idle: 5
+
+  # RabbitMQ配置
+  rabbitmq:
+    host: 127.0.0.1
+    port: 5672
+    username: admin
+    password: Ry260104.Ry260104.
+    virtual-host: /
+    connection-timeout: 15000
+    listener:
+      simple:
+        acknowledge-mode: auto
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1000
+          multiplier: 2
+          max-interval: 10000
+
+  # 文件上传配置
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 300MB  # 单个文件最大300MB（支持大文件和视频上传）
+      max-request-size: 500MB  # 请求总大小最大500MB（支持多个大文件）
+      file-size-threshold: 2MB  # 文件写入磁盘的阈值
+      location: ${java.io.tmpdir}  # 临时文件存储位置
+
+# MyBatis-Plus配置
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+  mapper-locations: classpath:mapper/**/*.xml
+  type-aliases-package: com.erp.entity
+
+# JWT配置
+jwt:
+  # JWT密钥必须至少32个字符（256位）才能用于HS512算法
+  secret: erp-system-secret-key-2025-very-long-secret-key-for-hmac-sha512-algorithm
+  expiration: 43200000  # 12小时，单位：毫秒
+  refresh-expiration: 604800000  # 7天，单位：毫秒
+
+# 文件存储配置
+file:
+  storage:
+    type: oss  # local/oss
+    local:
+      path: C:/erp  # 本地存储根路径
+    oss:
+      endpoint: https://cos.ap-guangzhou.myqcloud.com
+      access-key-id: AKIDoTyGKCqIWWO1TxDE8rPksnX7WjiSzII4
+      access-key-secret: ZltqndKpBKSP8dMuFLC9vUq12teFpENJ
+      bucket-name: business-workflow-1395048629
+      region: ap-guangzhou 
+
+email:
+  channel:
+    aes-key: ERPEmailChannelSecretKey2025!!@@
+    cache-ttl-seconds: 300
+
+# Knife4j配置
+knife4j:
+  enable: true
+  openapi:
+    title: 危险废物处理企业ERP管理系统API文档
+    description: 危险废物处理企业ERP管理系统接口文档
+    version: 1.0.0
+    contact:
+      name: ERP System
+      email: support@erp.com
+
+# 日志配置
+logging:
+  level:
+    root: INFO
+    com.erp: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{50} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{50} - %msg%n"
+  file:
+    name: logs/erp.log
+    max-size: 10MB
+    max-history: 30
+
+ai:
+  agent:
+    # 自己生成一个 32 位的随机字符串，只能用英文和数字，例如：
+    aes-key: "f0c9e3b7a1d4f6c8e2b5a7c9d1f3e5b7"
+
+
+
+

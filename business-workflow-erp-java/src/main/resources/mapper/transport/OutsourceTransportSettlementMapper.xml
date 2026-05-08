@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.transport.OutsourceTransportSettlementMapper">
+
+    <!-- 派车单查询结果映射 -->
+    <resultMap id="SettlementDispatchOrderMap" type="com.erp.controller.transport.dto.SettlementDispatchOrderResponse">
+        <id column="dispatchId" property="dispatchId"/>
+        <result column="dispatchCode" property="dispatchCode"/>
+        <result column="dispatchDate" property="dispatchDate"/>
+        <result column="licensePlate" property="licensePlate"/>
+        <result column="driverName" property="driverName"/>
+        <result column="transportStart" property="transportStart"/>
+        <result column="transportEnd" property="transportEnd"/>
+        <result column="transportQuantity" property="transportQuantity"/>
+        <result column="transportDistance" property="transportDistance"/>
+        <result column="completionTime" property="completionTime"/>
+        <result column="contractCode" property="contractCode"/>
+    </resultMap>
+
+    <!-- 总磅单查询结果映射 -->
+    <resultMap id="SettlementSlipMap" type="com.erp.controller.transport.dto.SettlementSlipResponse">
+        <id column="slipId" property="slipId"/>
+        <result column="slipCode" property="slipCode"/>
+        <result column="slipDate" property="slipDate"/>
+        <result column="licensePlate" property="licensePlate"/>
+        <result column="driverName" property="driverName"/>
+        <result column="netWeight" property="netWeight"/>
+        <result column="dispatchCodesStr" property="dispatchCodesStr"/>
+        <result column="completionTime" property="completionTime"/>
+        <result column="contractCode" property="contractCode"/>
+        <result column="relatedSettlementNo" property="relatedSettlementNo"/>
+        <result column="isSettled" property="isSettled"/>
+    </resultMap>
+
+    <!-- 基于总磅单查询可结算记录（每个总磅单代表一趟） -->
+    <!-- 关联路径：总磅单 -> WEIGHING_SLIP_DISPATCH -> 运输单 -> 车辆 -> TRANSPORT_CONTRACT_VEHICLE -> 合同 -->
+    <!-- 支持查询未关联合同的孤儿数据，以及已关联/未关联结算单的状态 -->
+    <!-- 已关联结算单判断：通过 OTS_SLIP_RELATION 副表关联 -->
+    <!-- 合同信息来源：优先从车辆关联路径获取，若无则从结算单关联的合同获取 -->
+    <select id="selectAvailableSlipsForSettlement" resultMap="SettlementSlipMap">
+        SELECT * FROM (
+            SELECT
+                ws.总磅单编号 AS slipId,
+                ws.总磅单号 AS slipCode,
+                ws.日期 AS slipDate,
+                ws.车号 AS licensePlate,
+                MAX(do.驾驶员姓名) AS driverName,
+                ws.净重 AS netWeight,
+                GROUP_CONCAT(DISTINCT do.运输单号 SEPARATOR ',') AS dispatchCodesStr,
+                ws.二次过秤时间 AS completionTime,
+                COALESCE(ANY_VALUE(tc.合同单号), MAX(s.合同单号)) AS contractCode,
+                MAX(s.结算单单号) AS relatedSettlementNo,
+                CASE WHEN MAX(s.结算单编号) IS NOT NULL THEN TRUE ELSE FALSE END AS isSettled
+            FROM WEIGHING_SLIP ws
+            INNER JOIN WEIGHING_SLIP_DISPATCH wsd ON ws.总磅单编号 = wsd.总磅单编号
+            INNER JOIN DISPATCH_ORDER do ON wsd.运输单号 = do.运输单号
+            LEFT JOIN VEHICLE v ON do.车辆编号 = v.车辆编号
+            LEFT JOIN TRANSPORT_CONTRACT_VEHICLE tcv ON v.车辆编号 = tcv.车辆编号
+            LEFT JOIN TRANSPORT_CONTRACT tc ON tcv.合同编号 = tc.合同编号 AND tc.是否删除 = 0
+            LEFT JOIN DISPATCH_ORDER_NOTICE don ON do.运输单号 = don.运输单号
+            LEFT JOIN OTS_SLIP_RELATION osr ON ws.总磅单编号 = osr.总磅单编号
+            LEFT JOIN OUTSOURCE_TRANSPORT_SETTLEMENT s ON osr.结算单编号 = s.结算单编号 AND s.是否删除 = 0
+            WHERE ws.状态 = '已细分'
+            <if test="searchKeyword != null and searchKeyword != ''">
+                AND (ws.车号 LIKE CONCAT('%', #{searchKeyword}, '%')
+                     OR do.驾驶员姓名 LIKE CONCAT('%', #{searchKeyword}, '%')
+                     OR ws.总磅单号 LIKE CONCAT('%', #{searchKeyword}, '%'))
+            </if>
+            <if test="excludeSettled == true">
+                AND s.结算单编号 IS NULL
+            </if>
+            GROUP BY ws.总磅单编号, ws.总磅单号, ws.日期, ws.车号, ws.净重, ws.二次过秤时间
+        ) AS t
+        WHERE 1=1
+        <!-- 合同单号筛选 -->
+        <if test="contractCode != null and contractCode != ''">
+            AND contractCode = #{contractCode}
+        </if>
+        <!-- 包含未关联合同的总磅单（孤儿数据） -->
+        <if test="includeUnrelated == true">
+            AND contractCode IS NULL
+        </if>
+        ORDER BY slipDate DESC, completionTime DESC
+    </select>
+
+    <!-- 统计可结算的总磅单数量 -->
+    <!-- 关联路径：总磅单 -> WEIGHING_SLIP_DISPATCH -> 运输单 -> 车辆 -> TRANSPORT_CONTRACT_VEHICLE -> 合同 -->
+    <!-- 已关联结算单判断：通过 OTS_SLIP_RELATION 副表关联 -->
+    <!-- 合同信息来源：优先从车辆关联路径获取，若无则从结算单关联的合同获取 -->
+    <select id="countAvailableSlipsForSettlement" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT ws.总磅单编号)
+        FROM WEIGHING_SLIP ws
+        INNER JOIN WEIGHING_SLIP_DISPATCH wsd ON ws.总磅单编号 = wsd.总磅单编号
+        INNER JOIN DISPATCH_ORDER do ON wsd.运输单号 = do.运输单号
+        LEFT JOIN VEHICLE v ON do.车辆编号 = v.车辆编号
+        LEFT JOIN TRANSPORT_CONTRACT_VEHICLE tcv ON v.车辆编号 = tcv.车辆编号
+        LEFT JOIN TRANSPORT_CONTRACT tc ON tcv.合同编号 = tc.合同编号 AND tc.是否删除 = 0
+        LEFT JOIN DISPATCH_ORDER_NOTICE don ON do.运输单号 = don.运输单号
+        <!-- 左连接OTS_SLIP_RELATION副表，判断是否已关联结算单 -->
+        LEFT JOIN OTS_SLIP_RELATION osr ON ws.总磅单编号 = osr.总磅单编号
+        LEFT JOIN OUTSOURCE_TRANSPORT_SETTLEMENT s ON osr.结算单编号 = s.结算单编号 AND s.是否删除 = 0
+        WHERE ws.状态 = '已细分'
+        <!-- 合同单号筛选：优先从车辆关联路径获取，若无则从结算单关联的合同获取 -->
+        <if test="contractCode != null and contractCode != ''">
+            AND (tc.合同单号 = #{contractCode} OR s.合同单号 = #{contractCode})
+        </if>
+        <!-- 搜索关键词 -->
+        <if test="searchKeyword != null and searchKeyword != ''">
+            AND (ws.车号 LIKE CONCAT('%', #{searchKeyword}, '%')
+                 OR do.驾驶员姓名 LIKE CONCAT('%', #{searchKeyword}, '%')
+                 OR ws.总磅单号 LIKE CONCAT('%', #{searchKeyword}, '%'))
+        </if>
+        <!-- 包含未关联合同的总磅单（孤儿数据） -->
+        <if test="includeUnrelated == true">
+            AND tc.合同单号 IS NULL AND s.合同单号 IS NULL
+        </if>
+        <!-- 排除已关联结算单的数据 -->
+        <if test="excludeSettled == true">
+            AND s.结算单编号 IS NULL
+        </if>
+    </select>
+
+    <!-- 统计合同编号为空的结算单数量（游离数据） -->
+    <select id="countByContractIdIsNull" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM OUTSOURCE_TRANSPORT_SETTLEMENT
+        WHERE 是否删除 = 0
+        AND 合同编号 IS NULL
+        AND 合同单号 IS NOT NULL
+    </select>
+
+    <!-- 分页查询结算单列表 -->
+    <select id="selectPageList" resultType="com.erp.entity.transport.OutsourceTransportSettlement">
+        SELECT * FROM OUTSOURCE_TRANSPORT_SETTLEMENT
+        WHERE 是否删除 = 0
+        <if test="contractId != null">
+            AND 合同编号 = #{contractId}
+        </if>
+        <if test="contractNo != null and contractNo != ''">
+            AND 合同单号 = #{contractNo}
+        </if>
+        <if test="status != null and status != ''">
+            AND 状态 = #{status}
+        </if>
+        <if test="carrierName != null and carrierName != ''">
+            AND 承运方名称 LIKE CONCAT('%', #{carrierName}, '%')
+        </if>
+        <if test="settlementNo != null and settlementNo != ''">
+            AND 结算单单号 LIKE CONCAT('%', #{settlementNo}, '%')
+        </if>
+        <if test="startDate != null">
+            AND 结算周期起 &gt;= #{startDate}
+        </if>
+        <if test="endDate != null">
+            AND 结算周期止 &lt;= #{endDate}
+        </if>
+        <if test="settlementDirection != null and settlementDirection != ''">
+            AND 付款方向 = #{settlementDirection}
+        </if>
+        <if test="contractId == null and contractNo == null">
+            AND 合同编号 IS NULL
+        </if>
+        ORDER BY 创建时间 DESC
+    </select>
+
+    <!-- 分页查询统计 -->
+    <select id="selectPageCount" resultType="java.lang.Long">
+        SELECT COUNT(1) FROM OUTSOURCE_TRANSPORT_SETTLEMENT
+        WHERE 是否删除 = 0
+        <if test="contractId != null">
+            AND 合同编号 = #{contractId}
+        </if>
+        <if test="contractNo != null and contractNo != ''">
+            AND 合同单号 = #{contractNo}
+        </if>
+        <if test="status != null and status != ''">
+            AND 状态 = #{status}
+        </if>
+        <if test="carrierName != null and carrierName != ''">
+            AND 承运方名称 LIKE CONCAT('%', #{carrierName}, '%')
+        </if>
+        <if test="settlementNo != null and settlementNo != ''">
+            AND 结算单单号 LIKE CONCAT('%', #{settlementNo}, '%')
+        </if>
+        <if test="startDate != null">
+            AND 结算周期起 &gt;= #{startDate}
+        </if>
+        <if test="endDate != null">
+            AND 结算周期止 &lt;= #{endDate}
+        </if>
+        <if test="settlementDirection != null and settlementDirection != ''">
+            AND 付款方向 = #{settlementDirection}
+        </if>
+        <if test="contractId == null and contractNo == null">
+            AND 合同编号 IS NULL
+        </if>
+    </select>
+
+    <!-- 根据ID查询详情（包含关联的总磅单信息，使用嵌套SELECT） -->
+    <select id="selectDetailById" resultMap="DetailResultMap">
+        SELECT
+            s.结算单编号 AS settlementId,
+            s.结算单单号 AS settlementNo,
+            s.合同编号 AS contractId,
+            s.合同单号 AS contractNo,
+            s.承运方名称 AS carrierName,
+            s.联系人 AS contactPerson,
+            s.联系电话 AS contactPhone,
+            s.银行名称 AS bankName,
+            s.银行卡号 AS cardNumber,
+            s.账户名称 AS accountName,
+            s.结算周期起 AS settlementPeriodStart,
+            s.结算周期止 AS settlementPeriodEnd,
+            s.结算方式 AS settlementMethod,
+            s.计量单位 AS unit,
+            s.结算数量 AS settlementQuantity,
+            s.结算单价 AS settlementPrice,
+            s.结算金额 AS settlementAmount,
+            s.已付金额 AS paidAmount,
+            s.状态 AS status,
+            s.审核意见 AS auditOpinion,
+            s.审核人编码 AS auditorId,
+            s.审核人姓名 AS auditorName,
+            s.审核时间 AS auditTime,
+            s.付款方向 AS paymentDirection,
+            s.备注 AS remark,
+            s.创建人编码 AS creatorId,
+            s.创建人姓名 AS creatorName,
+            s.创建时间 AS createTime,
+            s.更新时间 AS updateTime,
+            s.更新人编码 AS updaterId,
+            s.是否锁定 AS locked,
+            s.锁定时间 AS lockTime,
+            s.锁定人编码 AS lockUserId,
+            s.锁定原因 AS lockReason,
+            s.是否删除 AS deleted,
+            s.version AS version
+        FROM OUTSOURCE_TRANSPORT_SETTLEMENT s
+        WHERE s.是否删除 = 0 AND s.结算单编号 = #{settlementId}
+    </select>
+
+    <!-- 详情结果映射（包含一对多总磅单） -->
+    <resultMap id="DetailResultMap" type="com.erp.controller.transport.dto.OutsourceSettlementResponse">
+        <id property="settlementId" column="settlementId"/>
+        <result property="settlementNo" column="settlementNo"/>
+        <result property="contractId" column="contractId"/>
+        <result property="contractNo" column="contractNo"/>
+        <result property="carrierName" column="carrierName"/>
+        <result property="contactPerson" column="contactPerson"/>
+        <result property="contactPhone" column="contactPhone"/>
+        <result property="bankName" column="bankName"/>
+        <result property="cardNumber" column="cardNumber"/>
+        <result property="accountName" column="accountName"/>
+        <result property="settlementPeriodStart" column="settlementPeriodStart"/>
+        <result property="settlementPeriodEnd" column="settlementPeriodEnd"/>
+        <result property="settlementMethod" column="settlementMethod"/>
+        <result property="unit" column="unit"/>
+        <result property="settlementQuantity" column="settlementQuantity"/>
+        <result property="settlementPrice" column="settlementPrice"/>
+        <result property="settlementAmount" column="settlementAmount"/>
+        <result property="paidAmount" column="paidAmount"/>
+        <result property="status" column="status"/>
+        <result property="auditOpinion" column="auditOpinion"/>
+        <result property="auditorId" column="auditorId"/>
+        <result property="auditorName" column="auditorName"/>
+        <result property="auditTime" column="auditTime"/>
+        <result property="paymentDirection" column="paymentDirection"/>
+        <result property="remark" column="remark"/>
+        <result property="creatorId" column="creatorId"/>
+        <result property="creatorName" column="creatorName"/>
+        <result property="createTime" column="createTime"/>
+        <result property="updateTime" column="updateTime"/>
+        <result property="updaterId" column="updaterId"/>
+        <result property="locked" column="locked"/>
+        <result property="lockTime" column="lockTime"/>
+        <result property="lockUserId" column="lockUserId"/>
+        <result property="lockReason" column="lockReason"/>
+        <result property="deleted" column="deleted"/>
+        <result property="version" column="version"/>
+        <!-- 一对多：嵌套SELECT查询总磅单 -->
+        <collection property="slipIds" column="settlementId"
+                    select="com.erp.mapper.transport.OutsourceTransportSettlementSlipMapper.selectSlipIdsBySettlementId"/>
+        <collection property="slips" column="settlementId"
+                    select="com.erp.mapper.transport.OutsourceTransportSettlementSlipMapper.selectBySettlementIdForDetail"/>
+    </resultMap>
+
+    <!-- 统计各状态的数量 -->
+    <select id="countByStatus" resultType="java.lang.Integer">
+        SELECT COUNT(1) FROM OUTSOURCE_TRANSPORT_SETTLEMENT
+        WHERE 是否删除 = 0 AND 状态 = #{status}
+    </select>
+
+</mapper>

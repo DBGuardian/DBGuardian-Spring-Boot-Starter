@@ -1,0 +1,29 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+---
+description: Git 分支管理规范
+globs:
+alwaysApply: false
+---
+# Git 规则
+
+## 分支管理
+- main/master: 主分支，保持稳定可发布状态
+- develop: 开发分支，包含最新开发特性
+- feature/*: 功能分支，用于开发新功能
+- bugfix/*: 修复分支，用于修复bug
+- release/*: 发布分支，用于准备发布
+
+**常用分支命名约定**：
+
+| 分支类型   | 命名格式             | 示例                      |
+| ---------- | -------------------- | ------------------------- |
+| 功能分支   | feature/[描述]       | feature/user-auth         |
+| 修复分支   | fix/[问题ID]-[描述]  | fix/issue-42-login-crash  |
+| 发布分支   | release/[版本]       | release/v2.1.0            |
+| 热修复分支 | hotfix/[版本]-[描述] | hotfix/v2.0.1-payment-fix |
+
+

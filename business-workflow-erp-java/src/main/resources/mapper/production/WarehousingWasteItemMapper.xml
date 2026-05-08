@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.production.WarehousingWasteItemMapper">
+
+    <!-- 根据入库单编号查询危废明细列表 -->
+    <select id="selectByWarehousingId" resultType="com.erp.entity.production.WarehousingWasteItem">
+        SELECT
+            `入库危废明细编号` AS itemId,
+            `入库单编号` AS warehousingId,
+            `收运通知单明细编号` AS pickupNoticeItemId,
+            `危废条目编号` AS hazardousWasteItemId,
+            `废物名称` AS wasteName,
+            `废物代码` AS wasteCode,
+            `危险特性` AS hazardFeature,
+            `废物形态` AS form,
+            `计划收运数量` AS plannedQty,
+            `基本计量单位` AS measureUnit,
+            `是否启用辅助核算` AS enableAuxiliaryAccounting,
+            `辅助计量单位` AS auxUnit,
+            `辅助单位每基础单位数量` AS auxPerBase,
+            `辅助数量` AS auxQuantity,
+            `实际收运辅助数量` AS actualAuxQuantity,
+            `实际收运数量` AS actualQty,
+            `差异原因` AS differenceReason,
+            `有价类重量` AS valuableWeight,
+            `无价类重量` AS valuelessWeight,
+            `实际入库日期` AS createTime,
+            `更新时间` AS updateTime
+        FROM WAREHOUSING_WASTE_ITEM
+        WHERE `入库单编号` = #{warehousingId}
+        ORDER BY `入库危废明细编号`
+    </select>
+
+    <!-- 根据入库单编号列表批量查询危废明细 -->
+    <select id="selectByWarehousingIds" resultType="com.erp.entity.production.WarehousingWasteItem">
+        SELECT
+            wwi.`入库危废明细编号` AS itemId,
+            wwi.`入库单编号` AS warehousingId,
+            w.`入库单号` AS warehousingNo,
+            wwi.`收运通知单明细编号` AS pickupNoticeItemId,
+            wwi.`危废条目编号` AS hazardousWasteItemId,
+            wwi.`废物名称` AS wasteName,
+            wwi.`废物代码` AS wasteCode,
+            wwi.`危险特性` AS hazardFeature,
+            wwi.`废物形态` AS form,
+            wwi.`计划收运数量` AS plannedQty,
+            wwi.`基本计量单位` AS measureUnit,
+            wwi.`是否启用辅助核算` AS enableAuxiliaryAccounting,
+            wwi.`辅助计量单位` AS auxUnit,
+            wwi.`辅助单位每基础单位数量` AS auxPerBase,
+            wwi.`辅助数量` AS auxQuantity,
+            wwi.`实际收运辅助数量` AS actualAuxQuantity,
+            wwi.`实际收运数量` AS actualQty,
+            wwi.`差异原因` AS differenceReason,
+            wwi.`有价类重量` AS valuableWeight,
+            wwi.`无价类重量` AS valuelessWeight,
+            wwi.`实际入库日期` AS createTime,
+            wwi.`更新时间` AS updateTime
+        FROM WAREHOUSING_WASTE_ITEM wwi
+        INNER JOIN WAREHOUSING w ON wwi.`入库单编号` = w.`入库单编号`
+        WHERE wwi.`入库单编号` IN
+        <foreach collection="warehousingIds" item="warehousingId" open="(" separator="," close=")">
+            #{warehousingId}
+        </foreach>
+        ORDER BY wwi.`入库单编号` ASC, wwi.`入库危废明细编号` ASC
+    </select>
+
+</mapper>
+
+

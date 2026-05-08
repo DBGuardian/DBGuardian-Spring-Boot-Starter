@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.dashboard.DashboardMapper">
+
+    <!-- 获取统计数据 -->
+    <select id="getStatistics" resultType="com.erp.controller.dashboard.dto.DashboardDataResponse$Statistics">
+        SELECT 
+            (SELECT COUNT(*) FROM CUSTOMER) AS customerTotal,
+            (SELECT COUNT(*) FROM CONTRACT) AS contractTotal,
+            (SELECT COUNT(*) FROM PICKUP_NOTICE WHERE 状态 IN ('待调度', '审核中')) AS pendingDispatchCount,
+            (SELECT COALESCE(SUM(结算金额 - 已收金额), 0) FROM SETTLEMENT 
+             WHERE 状态 IN ('待审核', '已审核') AND 结算类型 = 'RECEIVABLE' AND 结算金额 > 已收金额) AS pendingReceiptAmount
+    </select>
+
+    <!-- 获取待办事项列表 -->
+    <select id="getTodoList" resultType="com.erp.controller.dashboard.dto.DashboardDataResponse$TodoItem">
+        SELECT 
+            'CONTRACT_AUDIT' AS type,
+            '待审核合同' AS title,
+            CONCAT('有 ', COUNT(*), ' 个合同等待审核') AS description,
+            COUNT(*) AS count
+        FROM CONTRACT
+        WHERE 合同状态 = '待审核'
+        
+        UNION ALL
+        
+        SELECT 
+            'DISPATCH_TASK' AS type,
+            '待派单任务' AS title,
+            CONCAT('有 ', COUNT(*), ' 个收运通知等待派单') AS description,
+            COUNT(*) AS count
+        FROM PICKUP_NOTICE
+        WHERE 状态 IN ('待调度', '审核中')
+        
+        UNION ALL
+        
+        SELECT 
+            'WAREHOUSING_TASK' AS type,
+            '待入库任务' AS title,
+            CONCAT('有 ', COUNT(*), ' 个总磅单等待入库') AS description,
+            COUNT(*) AS count
+        FROM WEIGHING_SLIP
+        WHERE 状态 = '待细分'
+        
+        UNION ALL
+        
+        SELECT 
+            'SETTLEMENT_AUDIT' AS type,
+            '待审核结算单' AS title,
+            CONCAT('有 ', COUNT(*), ' 个结算单等待审核') AS description,
+            COUNT(*) AS count
+        FROM SETTLEMENT
+        WHERE 状态 = '待审核'
+        
+        ORDER BY count DESC
+    </select>
+
+    <!-- 获取消息通知列表 -->
+    <select id="getMessageList" resultType="com.erp.controller.dashboard.dto.DashboardDataResponse$MessageItem">
+        SELECT 
+            m.消息标题 AS title,
+            m.消息内容 AS content,
+            DATE_FORMAT(m.创建时间, '%Y-%m-%d %H:%i:%s') AS time,
+            CASE WHEN m.消息状态 = '已读' THEN 1 ELSE 0 END AS isRead
+        FROM MESSAGE m
+        WHERE m.接收人编码 = #{userId}
+        AND m.消息状态 != '已删除'
+        ORDER BY 
+            CASE m.消息优先级 
+                WHEN '紧急' THEN 1 
+                WHEN '高' THEN 2 
+                WHEN '中' THEN 3 
+                WHEN '低' THEN 4 
+                ELSE 5 
+            END,
+            m.创建时间 DESC
+        LIMIT 10
+    </select>
+
+</mapper>
+

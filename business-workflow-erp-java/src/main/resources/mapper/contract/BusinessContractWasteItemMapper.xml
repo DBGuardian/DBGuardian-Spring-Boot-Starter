@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.contract.BusinessContractWasteItemMapper">
+
+    <resultMap id="BusinessContractWasteItemResultMap" type="com.erp.entity.contract.BusinessContractWasteItem">
+        <id column="明细编号" property="wasteItemId"/>
+        <result column="合同编号" property="contractId"/>
+        <result column="行号" property="rowNo"/>
+        <result column="来源报价项编号" property="sourceQuotationItemId"/>
+        <result column="结算类型" property="settlementType"/>
+        <result column="单价底价" property="unitFloorPrice"/>
+        <result column="合同底价" property="contractFloorPrice"/>
+        <result column="创建时间" property="createTime"/>
+        <result column="更新时间" property="updateTime"/>
+        <result column="是否删除" property="deleted"/>
+        <result column="version" property="version"/>
+    </resultMap>
+
+    <select id="selectByContractId" resultMap="BusinessContractWasteItemResultMap">
+        SELECT 明细编号, 合同编号, 行号, 来源报价项编号, 结算类型, 单价底价, 合同底价, 创建时间, 更新时间, 是否删除, version
+        FROM BUSINESS_CONTRACT_WASTE_ITEM
+        WHERE 合同编号 = #{contractId}
+          AND 是否删除 = 0
+        ORDER BY 行号 ASC, 明细编号 ASC
+    </select>
+
+    <delete id="deleteByContractId">
+        DELETE FROM BUSINESS_CONTRACT_WASTE_ITEM
+        WHERE 合同编号 = #{contractId}
+    </delete>
+</mapper>

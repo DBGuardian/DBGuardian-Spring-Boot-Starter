@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.finance.FundAccountMapper">
+
+    <!-- 资金账户分页查询（关联创建人/更新人），支持模糊查询与字段排序 -->
+    <select id="selectFundAccountPage" resultType="com.erp.controller.finance.dto.FundAccountListItemResponse">
+        SELECT
+            fa.`账户编号`       AS accountId,
+            fa.`账户编码`       AS accountCode,
+            fa.`账户名称`       AS accountName,
+            fa.`账户类型`       AS accountType,
+            fa.`账户银行账号`   AS accountBankAccount,
+            fa.`账户银行机构`   AS accountBankInstitution,
+            fa.`是否启用`       AS enabled,
+            fa.`备注`           AS remark,
+            fa.`创建时间`       AS createTime,
+            fa.`更新时间`       AS updateTime,
+            e1.`员工姓名`       AS createUserName,
+            e2.`员工姓名`       AS updateUserName,
+            fa.`创建人编码`     AS creatorId
+        FROM FUND_ACCOUNT fa
+                 LEFT JOIN EMPLOYEE e1 ON fa.`创建人编码` = e1.`员工编码`
+                 LEFT JOIN EMPLOYEE e2 ON fa.`更新人编码` = e2.`员工编码`
+        <where>
+            <if test="query.accountName != null and query.accountName != ''">
+                AND fa.`账户名称` LIKE CONCAT('%', #{query.accountName}, '%')
+            </if>
+            <if test="query.accountType != null and query.accountType != ''">
+                AND fa.`账户类型` = #{query.accountType}
+            </if>
+            <if test="query.isEnabled != null">
+                AND fa.`是否启用` = #{query.isEnabled}
+            </if>
+            <!-- viewScope=SELF 时只查自己创建的账户 -->
+            <if test="query.creatorFilter != null">
+                AND fa.`创建人编码` = #{query.creatorFilter}
+            </if>
+        </where>
+        <choose>
+            <when test="query.sortField != null and query.sortField != ''">
+                ORDER BY
+                <choose>
+                    <when test="query.sortField == 'accountCode'">
+                        fa.`账户编码`
+                    </when>
+                    <when test="query.sortField == 'accountName'">
+                        fa.`账户名称`
+                    </when>
+                    <when test="query.sortField == 'accountType'">
+                        fa.`账户类型`
+                    </when>
+                    <when test="query.sortField == 'createTime'">
+                        fa.`创建时间`
+                    </when>
+                    <when test="query.sortField == 'updateTime'">
+                        fa.`更新时间`
+                    </when>
+                    <otherwise>
+                        fa.`创建时间`
+                    </otherwise>
+                </choose>
+                <choose>
+                    <when test="query.sortOrder != null and (query.sortOrder == 'asc' or query.sortOrder == 'ASC')">
+                        ASC
+                    </when>
+                    <otherwise>
+                        DESC
+                    </otherwise>
+                </choose>
+            </when>
+            <otherwise>
+                ORDER BY fa.`创建时间` DESC
+            </otherwise>
+        </choose>
+    </select>
+
+    <!-- 根据组织ID查询账户ID列表 -->
+    <select id="selectAccountIdsByOrganizationId" resultType="java.lang.Long">
+        SELECT `账户编号`
+        FROM FUND_ACCOUNT
+        WHERE `组织编号` = #{organizationId}
+        ORDER BY `账户名称` ASC
+    </select>
+
+    <!-- 分页查询组织下的账户 -->
+    <select id="selectAccountsByOrganizationIdPage" resultType="com.erp.controller.finance.dto.FundAccountListItemResponse">
+        SELECT
+            fa.`账户编号`       AS accountId,
+            fa.`账户编码`       AS accountCode,
+            fa.`账户名称`       AS accountName,
+            fa.`账户类型`       AS accountType,
+            fa.`账户银行账号`   AS accountBankAccount,
+            fa.`账户银行机构`   AS accountBankInstitution,
+            fa.`是否启用`       AS enabled,
+            fa.`备注`           AS remark,
+            fa.`创建时间`       AS createTime,
+            fa.`更新时间`       AS updateTime,
+            e1.`员工姓名`       AS createUserName,
+            e2.`员工姓名`       AS updateUserName,
+            fo.`组织名称`       AS organizationName,
+            0                  AS displayOrder,
+            fa.`创建人编码`     AS creatorId
+        FROM FUND_ACCOUNT fa
+        LEFT JOIN EMPLOYEE e1 ON fa.`创建人编码` = e1.`员工编码`
+        LEFT JOIN EMPLOYEE e2 ON fa.`更新人编码` = e2.`员工编码`
+        LEFT JOIN FUND_ORGANIZATION fo ON fa.`组织编号` = fo.`组织编号`
+        <where>
+            fa.`组织编号` = #{organizationId}
+            <if test="query.accountName != null and query.accountName != ''">
+                AND fa.`账户名称` LIKE CONCAT('%', #{query.accountName}, '%')
+            </if>
+            <if test="query.accountType != null and query.accountType != ''">
+                AND fa.`账户类型` = #{query.accountType}
+            </if>
+            <if test="query.isEnabled != null">
+                AND fa.`是否启用` = #{query.isEnabled}
+            </if>
+            <!-- viewScope=SELF 时只查自己创建的账户 -->
+            <if test="query.creatorFilter != null">
+                AND fa.`创建人编码` = #{query.creatorFilter}
+            </if>
+        </where>
+        ORDER BY fa.`账户名称` ASC
+    </select>
+
+</mapper>
+
+
+
+
+

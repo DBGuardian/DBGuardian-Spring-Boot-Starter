@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.system.EmployeeRoleMapper">
+
+    <insert id="insertEmployeeRoles">
+        INSERT INTO EMPLOYEE_ROLE(员工编码, 角色编号)
+        VALUES
+        <foreach collection="roleIds" item="roleId" separator=",">
+            (#{employeeId}, #{roleId})
+        </foreach>
+    </insert>
+
+    <delete id="deleteByEmployeeId">
+        DELETE FROM EMPLOYEE_ROLE WHERE 员工编码 = #{employeeId}
+    </delete>
+
+    <select id="selectRoleNamesByEmployeeId" resultType="java.lang.String">
+        SELECT r.角色名称
+        FROM EMPLOYEE_ROLE er
+        JOIN ROLE r ON er.角色编号 = r.角色编号
+        WHERE er.员工编码 = #{employeeId}
+    </select>
+
+    <select id="selectRoleIdsByEmployeeId" resultType="java.lang.Integer">
+        SELECT 角色编号
+        FROM EMPLOYEE_ROLE
+        WHERE 员工编码 = #{employeeId}
+        ORDER BY 角色编号
+    </select>
+
+</mapper>
+
+
+
+
+
+
+
+

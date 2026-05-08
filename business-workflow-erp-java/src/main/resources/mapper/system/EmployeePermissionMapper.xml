@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.system.EmployeePermissionMapper">
+
+    <!-- 根据员工ID和权限ID列表删除员工权限关系 -->
+    <delete id="deleteByEmployeeAndPermissionIds">
+        DELETE FROM employee_permission
+        WHERE 员工编码 = #{employeeId}
+        AND 页面权限编号 IN (${permissionIdsCsv})
+    </delete>
+
+    <!-- 批量插入员工权限 -->
+    <insert id="batchInsert">
+        INSERT INTO employee_permission (员工编码, 页面权限编号, 可查看, 可编辑, 数据范围, 操作范围, version)
+        VALUES
+        <foreach collection="list" item="item" separator=",">
+            (#{item.employeeId}, #{item.pagePermissionId}, #{item.canView}, #{item.canEdit}, 
+             #{item.viewScope}, #{item.operateScope}, 0)
+        </foreach>
+    </insert>
+
+    <!-- 批量更新员工权限 -->
+    <update id="batchUpdate">
+        <foreach collection="list" item="item" separator=";">
+            UPDATE employee_permission
+            SET 可查看 = #{item.canView},
+                可编辑 = #{item.canEdit},
+                数据范围 = #{item.viewScope},
+                操作范围 = #{item.operateScope},
+                version = version + 1
+            WHERE 员工编码 = #{item.employeeId}
+              AND 页面权限编号 = #{item.pagePermissionId}
+        </foreach>
+    </update>
+
+    <!-- 根据员工ID查询所有页面权限 -->
+    <select id="selectByEmployeeId" resultType="com.erp.entity.system.EmployeePermission">
+        SELECT 员工编码 as employeeId,
+               页面权限编号 as pagePermissionId,
+               可查看 as canView,
+               可编辑 as canEdit,
+               数据范围 as viewScope,
+               操作范围 as operateScope,
+               version
+        FROM employee_permission
+        WHERE 员工编码 = #{employeeId}
+    </select>
+
+</mapper>

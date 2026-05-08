@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.contract.QuotationWasteItemMapper">
+
+    <resultMap id="QuotationWasteItemResultMap" type="com.erp.entity.contract.QuotationWasteItem">
+        <id column="报价危废明细编号" property="quotationWasteItemId"/>
+        <result column="报价条目编号" property="quotationItemId"/>
+        <result column="危废条目编号" property="hazardousWasteItemId"/>
+        <result column="废物类别" property="wasteCategory"/>
+        <result column="行业来源" property="industrySource"/>
+        <result column="废物代码" property="wasteCode"/>
+        <result column="废物名称" property="hazardousWaste"/>
+        <result column="废物形态" property="form"/>
+        <result column="计量单位" property="unit"/>
+        <result column="计划转移数量" property="plannedQuantity"/>
+        <result column="是否启用辅助核算" property="enableAuxiliaryAccounting"/>
+        <result column="辅助计量单位" property="auxUnit"/>
+        <result column="辅助单位每基础单位数量" property="auxPerBase"/>
+        <result column="辅助数量" property="auxQuantity"/>
+        <result column="辅助单价" property="auxUnitPrice"/>
+        <result column="付款方" property="payer"/>
+        <result column="计价方案" property="pricingPlan"/>
+        <result column="备注" property="remark"/>
+        <result column="创建时间" property="createTime"/>
+    </resultMap>
+
+    <select id="selectByQuotationItemId" resultMap="QuotationWasteItemResultMap">
+        SELECT
+            qwi.报价危废明细编号,
+            qwi.报价条目编号,
+            qwi.危废条目编号,
+            hwc.废物类别,
+            hwi.行业来源,
+            hwi.废物代码,
+            qwi.废物名称,
+            qwi.废物形态,
+            qwi.计量单位,
+            qwi.计划转移数量,
+            qwi.是否启用辅助核算,
+            qwi.辅助计量单位,
+            qwi.辅助单位每基础单位数量,
+            qwi.辅助数量,
+            qwi.辅助单价,
+            qwi.付款方,
+            qwi.计价方案,
+            qwi.备注,
+            qwi.创建时间
+        FROM QUOTATION_WASTE_ITEM qwi
+        LEFT JOIN HAZARDOUS_WASTE_ITEM hwi ON qwi.危废条目编号 = hwi.条目编号
+        LEFT JOIN HAZARDOUS_WASTE_CATEGORY hwc ON hwi.废物类别编号 = hwc.废物类别编号
+        WHERE qwi.报价条目编号 = #{quotationItemId}
+        ORDER BY qwi.创建时间 ASC
+    </select>
+
+    <select id="selectByQuotationItemIds" resultMap="QuotationWasteItemResultMap">
+        SELECT
+            qwi.报价危废明细编号,
+            qwi.报价条目编号,
+            qwi.危废条目编号,
+            hwc.废物类别,
+            hwi.行业来源,
+            hwi.废物代码,
+            qwi.废物名称,
+            qwi.废物形态,
+            qwi.计量单位,
+            qwi.计划转移数量,
+            qwi.是否启用辅助核算,
+            qwi.辅助计量单位,
+            qwi.辅助单位每基础单位数量,
+            qwi.辅助数量,
+            qwi.辅助单价,
+            qwi.付款方,
+            qwi.计价方案,
+            qwi.备注,
+            qwi.创建时间
+        FROM QUOTATION_WASTE_ITEM qwi
+        LEFT JOIN HAZARDOUS_WASTE_ITEM hwi ON qwi.危废条目编号 = hwi.条目编号
+        LEFT JOIN HAZARDOUS_WASTE_CATEGORY hwc ON hwi.废物类别编号 = hwc.废物类别编号
+        WHERE qwi.报价条目编号 IN
+        <foreach collection="quotationItemIds" item="itemId" open="(" separator="," close=")">
+            #{itemId}
+        </foreach>
+        ORDER BY qwi.报价条目编号 ASC, qwi.创建时间 ASC
+    </select>
+
+    <delete id="deleteByQuotationItemId">
+        DELETE FROM QUOTATION_WASTE_ITEM
+        WHERE 报价条目编号 = #{quotationItemId}
+    </delete>
+
+    <delete id="deleteByQuotationItemIds">
+        DELETE FROM QUOTATION_WASTE_ITEM
+        WHERE 报价条目编号 IN
+        <foreach collection="quotationItemIds" item="itemId" open="(" separator="," close=")">
+            #{itemId}
+        </foreach>
+    </delete>
+
+</mapper>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

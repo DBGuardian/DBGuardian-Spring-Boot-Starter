@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.production.TransferManifestItemMapper">
+
+    <!-- 结果映射 -->
+    <resultMap id="BaseResultMap" type="com.erp.entity.production.TransferManifestItem">
+        <id     column="子项编号"    property="itemId"/>
+        <result column="联单编号"    property="manifestId"/>
+        <result column="废物类别"    property="wasteCategory"/>
+        <result column="废物代码"    property="wasteCode"/>
+        <result column="废物名称"    property="wasteName"/>
+        <result column="废物形态"    property="wasteForm"/>
+        <result column="包装方式"    property="packagingMethod"/>
+        <result column="计划数量"    property="plannedQuantity"/>
+        <result column="确认数量"    property="confirmedQuantity"/>
+        <result column="计量单位"    property="unit"/>
+        <result column="是否删除"    property="isDeleted"/>
+        <result column="创建时间"    property="createTime"/>
+        <result column="更新时间"    property="updateTime"/>
+        <result column="version"    property="version"/>
+    </resultMap>
+
+    <!-- 根据多个联单编号批量查询子项（避免 N+1） -->
+    <select id="selectByManifestIds" resultMap="BaseResultMap">
+        SELECT
+            `子项编号`,
+            `联单编号`,
+            `废物类别`,
+            `废物代码`,
+            `废物名称`,
+            `废物形态`,
+            `包装方式`,
+            `计划数量`,
+            `确认数量`,
+            `计量单位`,
+            `是否删除`,
+            `创建时间`,
+            `更新时间`,
+            `version`
+        FROM TRANSFER_MANIFEST_ITEM
+        WHERE `联单编号` IN
+        <foreach collection="manifestIds" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        AND `是否删除` = 0
+    </select>
+
+    <!-- 根据联单编号查询所有未删除子项 -->
+    <select id="selectByManifestId" resultMap="BaseResultMap">
+        SELECT
+            `子项编号`,
+            `联单编号`,
+            `废物类别`,
+            `废物代码`,
+            `废物名称`,
+            `废物形态`,
+            `包装方式`,
+            `计划数量`,
+            `确认数量`,
+            `计量单位`,
+            `是否删除`,
+            `创建时间`,
+            `更新时间`,
+            `version`
+        FROM TRANSFER_MANIFEST_ITEM
+        WHERE `联单编号` = #{manifestId}
+          AND `是否删除` = 0
+    </select>
+
+    <!-- 根据联单编号逻辑删除所有子项 -->
+    <update id="deleteByManifestId">
+        UPDATE TRANSFER_MANIFEST_ITEM
+        SET `是否删除` = 1
+        WHERE `联单编号` = #{manifestId}
+    </update>
+
+    <!-- 批量插入子表 -->
+    <insert id="batchInsert" useGeneratedKeys="true" keyProperty="itemId" keyColumn="子项编号">
+        INSERT INTO TRANSFER_MANIFEST_ITEM (
+            `联单编号`, `废物类别`, `废物代码`, `废物名称`, `废物形态`,
+            `包装方式`, `计划数量`, `确认数量`, `计量单位`,
+            `是否删除`, `创建时间`, `更新时间`, `version`
+        ) VALUES
+        <foreach collection="list" item="i" separator=",">
+        (
+            #{i.manifestId}, #{i.wasteCategory}, #{i.wasteCode}, #{i.wasteName}, #{i.wasteForm},
+            #{i.packagingMethod}, #{i.plannedQuantity}, #{i.confirmedQuantity}, #{i.unit},
+            0, NOW(), NOW(), 0
+        )
+        </foreach>
+    </insert>
+
+</mapper>

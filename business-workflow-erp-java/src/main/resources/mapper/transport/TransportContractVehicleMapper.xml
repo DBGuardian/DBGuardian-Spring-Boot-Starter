@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.transport.TransportContractVehicleMapper">
+
+    <!-- 查询合同关联的车辆列表（过滤已逻辑删除的合同） -->
+    <select id="selectByContractId" resultType="com.erp.controller.transport.dto.ContractVehicleResponse">
+        SELECT
+            tcv.关联编号 AS relationId,
+            tcv.合同编号 AS contractId,
+            tc.合同单号 AS contractNo,
+            tcv.车辆编号 AS vehicleId,
+            v.车牌号 AS plateNo,
+            v.车辆类型 AS vehicleType,
+            v.车辆状态 AS vehicleStatus,
+            v.公司名称 AS companyName,
+            v.核载吨位 AS loadCapacity,
+            DATE_FORMAT(tcv.关联时间, '%Y-%m-%d %H:%i:%s') AS relationTime,
+            tcv.关联人编码 AS relationUserId,
+            tcv.备注 AS remark
+        FROM TRANSPORT_CONTRACT_VEHICLE tcv
+        LEFT JOIN TRANSPORT_CONTRACT tc ON tcv.合同编号 = tc.合同编号 AND tc.是否删除 = 0
+        LEFT JOIN VEHICLE v ON tcv.车辆编号 = v.车辆编号
+        WHERE tcv.合同编号 = #{contractId}
+        ORDER BY tcv.关联时间 DESC
+    </select>
+
+    <!-- 查询车辆关联的合同列表（过滤已逻辑删除的合同） -->
+    <select id="selectByVehicleId" resultType="com.erp.controller.transport.dto.ContractVehicleResponse">
+        SELECT
+            tcv.关联编号 AS relationId,
+            tcv.合同编号 AS contractId,
+            tc.合同单号 AS contractNo,
+            tcv.车辆编号 AS vehicleId,
+            v.车牌号 AS plateNo,
+            v.车辆类型 AS vehicleType,
+            v.车辆状态 AS vehicleStatus,
+            v.公司名称 AS companyName,
+            v.核载吨位 AS loadCapacity,
+            DATE_FORMAT(tcv.关联时间, '%Y-%m-%d %H:%i:%s') AS relationTime,
+            tcv.关联人编码 AS relationUserId,
+            tcv.备注 AS remark
+        FROM TRANSPORT_CONTRACT_VEHICLE tcv
+        LEFT JOIN TRANSPORT_CONTRACT tc ON tcv.合同编号 = tc.合同编号 AND tc.是否删除 = 0
+        LEFT JOIN VEHICLE v ON tcv.车辆编号 = v.车辆编号
+        WHERE tcv.车辆编号 = #{vehicleId}
+        ORDER BY tcv.关联时间 DESC
+    </select>
+
+    <!-- 检查是否已关联 -->
+    <select id="checkExist" resultType="java.lang.Integer">
+        SELECT 关联编号 FROM TRANSPORT_CONTRACT_VEHICLE
+        WHERE 合同编号 = #{contractId} AND 车辆编号 = #{vehicleId}
+        LIMIT 1
+    </select>
+
+    <!-- 删除关联关系 -->
+    <delete id="deleteByContractAndVehicle">
+        DELETE FROM TRANSPORT_CONTRACT_VEHICLE
+        WHERE 合同编号 = #{contractId} AND 车辆编号 = #{vehicleId}
+    </delete>
+
+    <!-- 根据合同编号删除所有关联 -->
+    <delete id="deleteByContractId">
+        DELETE FROM TRANSPORT_CONTRACT_VEHICLE WHERE 合同编号 = #{contractId}
+    </delete>
+
+    <!-- 查询合同已关联的车辆ID列表 -->
+    <select id="selectVehicleIdsByContractId" resultType="java.lang.Integer">
+        SELECT 车辆编号 FROM TRANSPORT_CONTRACT_VEHICLE WHERE 合同编号 = #{contractId}
+    </select>
+
+    <!-- 批量查询车辆关联的合同信息（过滤已逻辑删除的合同） -->
+    <select id="selectContractsByVehicleIds" resultType="com.erp.controller.transport.dto.ContractVehicleResponse">
+        SELECT
+            tcv.关联编号 AS relationId,
+            tcv.合同编号 AS contractId,
+            tc.合同单号 AS contractNo,
+            tc.承运方名称 AS carrierName,
+            tcv.车辆编号 AS vehicleId,
+            v.车牌号 AS plateNo,
+            v.车辆类型 AS vehicleType,
+            v.车辆状态 AS vehicleStatus,
+            v.公司名称 AS companyName,
+            v.核载吨位 AS loadCapacity,
+            DATE_FORMAT(tcv.关联时间, '%Y-%m-%d %H:%i:%s') AS relationTime,
+            tcv.关联人编码 AS relationUserId,
+            tcv.备注 AS remark
+        FROM TRANSPORT_CONTRACT_VEHICLE tcv
+        LEFT JOIN TRANSPORT_CONTRACT tc ON tcv.合同编号 = tc.合同编号 AND tc.是否删除 = 0
+        LEFT JOIN VEHICLE v ON tcv.车辆编号 = v.车辆编号
+        WHERE tcv.车辆编号 IN
+        <foreach collection="vehicleIds" item="vehicleId" open="(" separator="," close=")">
+            #{vehicleId}
+        </foreach>
+        ORDER BY tcv.关联时间 DESC
+    </select>
+
+</mapper>

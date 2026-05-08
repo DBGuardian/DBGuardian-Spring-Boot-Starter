@@ -1,0 +1,286 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.report.FundBalanceTrendMapper">
+
+    <!-- 查询所有启用的资金账户 -->
+    <select id="selectEnabledAccounts" resultType="com.erp.entity.finance.FundAccount">
+        SELECT
+            账户编号 AS accountId,
+            账户编码 AS accountCode,
+            账户名称 AS accountName,
+            账户类型 AS accountType,
+            是否启用 AS enabled
+        FROM FUND_ACCOUNT
+        WHERE 是否启用 = 1
+        <if test="accountIds != null and accountIds.size() > 0">
+            AND 账户编号 IN
+            <foreach item="id" collection="accountIds" open="(" separator="," close=")">
+                #{id}
+            </foreach>
+        </if>
+        ORDER BY 账户编号 ASC
+    </select>
+
+    <!--
+        查询账户期初余额：
+        如果请求月份晚于最后已结账月份，则回退到最后已结账月份的期初余额，
+        从而让图表在超出已结账范围时保持水平线而不是清零。
+    -->
+    <select id="selectInitialBalances"
+            resultType="com.erp.controller.report.dto.FundBalanceTrendResponse$AccountInitialDTO">
+        SELECT
+            b.账户编号 AS accountId,
+            b.期初余额 AS initialBalance,
+            CONCAT(p.年份, '-', LPAD(CAST(p.月份 AS CHAR), 2, '0'), '-01') AS periodStart
+        FROM FUND_ACCOUNT_INITIAL_BALANCE b
+        INNER JOIN FUND_PERIOD p ON p.账期编号 = b.账期编号
+        INNER JOIN (
+            SELECT
+                CASE
+                    WHEN #{useLatestClosedPeriodFallback}
+                         AND latest.latestYear IS NOT NULL
+                         AND DATE(CONCAT(req.reqYear, '-', LPAD(req.reqMonth, 2, '0'), '-01')) >
+                             DATE(CONCAT(latest.latestYear, '-', LPAD(latest.latestMonth, 2, '0'), '-01'))
+                    THEN latest.latestYear
+                    ELSE req.reqYear
+                END AS chosenYear,
+                CASE
+                    WHEN #{useLatestClosedPeriodFallback}
+                         AND latest.latestMonth IS NOT NULL
+                         AND DATE(CONCAT(req.reqYear, '-', LPAD(req.reqMonth, 2, '0'), '-01')) >
+                             DATE(CONCAT(latest.latestYear, '-', LPAD(latest.latestMonth, 2, '0'), '-01'))
+                    THEN latest.latestMonth
+                    ELSE req.reqMonth
+                END AS chosenMonth
+            FROM (
+                SELECT
+                    YEAR(STR_TO_DATE(#{startDate}, '%Y-%m-%d')) AS reqYear,
+                    MONTH(STR_TO_DATE(#{startDate}, '%Y-%m-%d')) AS reqMonth
+            ) req
+            LEFT JOIN (
+                SELECT
+                    p2.年份 AS latestYear,
+                    p2.月份 AS latestMonth
+                FROM FUND_PERIOD p2
+                WHERE p2.是否已结账 = 1
+                  AND DATE(CONCAT(p2.年份, '-', LPAD(p2.月份, 2, '0'), '-01')) &lt;= STR_TO_DATE(#{startDate}, '%Y-%m-%d')
+                ORDER BY p2.年份 DESC, p2.月份 DESC
+                LIMIT 1
+            ) latest ON 1 = 1
+        ) period_choice
+            ON p.年份 = period_choice.chosenYear
+           AND p.月份 = period_choice.chosenMonth
+        WHERE b.账户编号 IN
+        <foreach item="id" collection="accountIds" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+    <!-- 查询区间内各账户每日资金流水汇总 -->
+    <select id="selectDayFlows"
+            resultType="com.erp.controller.report.dto.FundBalanceTrendResponse$DayFlowDTO">
+        SELECT
+            账户编号 AS accountId,
+            DATE_FORMAT(交易日期, '%Y-%m-%d') AS transactionDate,
+            SUM(CASE WHEN 交易类型 = 'INCOME' THEN 交易金额 ELSE 0 END) AS dayIncome,
+            SUM(CASE WHEN 交易类型 = 'EXPENDITURE' THEN 交易金额 ELSE 0 END) AS dayExpenditure
+        FROM FUND_TRANSACTION
+        WHERE 账户编号 IN
+        <foreach item="id" collection="accountIds" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        AND DATE_FORMAT(交易日期, '%Y-%m-%d') &gt;= #{startDate}
+        AND DATE_FORMAT(交易日期, '%Y-%m-%d') &lt;= #{endDate}
+        GROUP BY 账户编号, DATE_FORMAT(交易日期, '%Y-%m-%d')
+        ORDER BY transactionDate ASC
+    </select>
+
+    <!--
+        查询截止某日的账户余额：
+        如果截止日期晚于最后已结账月份，则取最后已结账月份的月末余额，
+        保证余额维持最后已结账值，不出现归零。
+    -->
+    <select id="selectEndDateBalances"
+            resultType="com.erp.controller.report.dto.FundBalanceTrendResponse$AccountInitialDTO">
+        SELECT
+            base.accountId AS accountId,
+            base.endBalance AS initialBalance,
+            base.periodStart AS periodStart
+        FROM (
+            SELECT
+                accounts.accountId AS accountId,
+                CONCAT(period_choice.chosenYear, '-', LPAD(period_choice.chosenMonth, 2, '0'), '-01') AS periodStart,
+                COALESCE(init.initialBalance, 0) + COALESCE(flow.netAmount, 0) AS endBalance
+            FROM (
+                SELECT 账户编号 AS accountId
+                FROM FUND_ACCOUNT
+                WHERE 账户编号 IN
+                <foreach item="id" collection="accountIds" open="(" separator="," close=")">
+                    #{id}
+                </foreach>
+            ) accounts
+            CROSS JOIN (
+                SELECT
+                    CASE
+                        WHEN #{useLatestClosedPeriodFallback}
+                             AND latest.latestYear IS NOT NULL
+                             AND DATE(CONCAT(req.reqYear, '-', LPAD(req.reqMonth, 2, '0'), '-01')) &gt;
+                                 DATE(CONCAT(latest.latestYear, '-', LPAD(latest.latestMonth, 2, '0'), '-01'))
+                        THEN latest.latestYear
+                        ELSE req.reqYear
+                    END AS chosenYear,
+                    CASE
+                        WHEN #{useLatestClosedPeriodFallback}
+                             AND latest.latestMonth IS NOT NULL
+                             AND DATE(CONCAT(req.reqYear, '-', LPAD(req.reqMonth, 2, '0'), '-01')) &gt;
+                                 DATE(CONCAT(latest.latestYear, '-', LPAD(latest.latestMonth, 2, '0'), '-01'))
+                        THEN latest.latestMonth
+                        ELSE req.reqMonth
+                    END AS chosenMonth,
+                    CASE
+                        WHEN #{useLatestClosedPeriodFallback}
+                             AND latest.latestYear IS NOT NULL
+                             AND DATE(CONCAT(req.reqYear, '-', LPAD(req.reqMonth, 2, '0'), '-01')) &gt;
+                                 DATE(CONCAT(latest.latestYear, '-', LPAD(latest.latestMonth, 2, '0'), '-01'))
+                        THEN LAST_DAY(CONCAT(latest.latestYear, '-', LPAD(latest.latestMonth, 2, '0'), '-01'))
+                        ELSE #{endDate}
+                    END AS flowEndDate
+                FROM (
+                    SELECT
+                        YEAR(STR_TO_DATE(#{endDate}, '%Y-%m-%d')) AS reqYear,
+                        MONTH(STR_TO_DATE(#{endDate}, '%Y-%m-%d')) AS reqMonth
+                ) req
+                LEFT JOIN (
+                    SELECT
+                        p2.年份 AS latestYear,
+                        p2.月份 AS latestMonth
+                    FROM FUND_PERIOD p2
+                    WHERE p2.是否已结账 = 1
+                      AND DATE(CONCAT(p2.年份, '-', LPAD(p2.月份, 2, '0'), '-01')) &lt;= STR_TO_DATE(#{endDate}, '%Y-%m-%d')
+                    ORDER BY p2.年份 DESC, p2.月份 DESC
+                    LIMIT 1
+                ) latest ON 1 = 1
+            ) period_choice
+            LEFT JOIN (
+                SELECT
+                    b.账户编号 AS accountId,
+                    b.期初余额 AS initialBalance,
+                    p.年份 AS periodYear,
+                    p.月份 AS periodMonth
+                FROM FUND_ACCOUNT_INITIAL_BALANCE b
+                INNER JOIN FUND_PERIOD p ON p.账期编号 = b.账期编号
+                WHERE b.账户编号 IN
+                <foreach item="id" collection="accountIds" open="(" separator="," close=")">
+                    #{id}
+                </foreach>
+            ) init
+                ON init.accountId = accounts.accountId
+               AND init.periodYear = period_choice.chosenYear
+               AND init.periodMonth = period_choice.chosenMonth
+            LEFT JOIN (
+                SELECT
+                    ft.账户编号 AS accountId,
+                    SUM(CASE WHEN ft.交易类型 = 'INCOME' THEN ft.交易金额 ELSE -ft.交易金额 END) AS netAmount
+                FROM FUND_TRANSACTION ft
+                CROSS JOIN (
+                    SELECT
+                        CASE
+                            WHEN #{useLatestClosedPeriodFallback}
+                                 AND latest.latestYear IS NOT NULL
+                                 AND DATE(CONCAT(req.reqYear, '-', LPAD(req.reqMonth, 2, '0'), '-01')) &gt;
+                                     DATE(CONCAT(latest.latestYear, '-', LPAD(latest.latestMonth, 2, '0'), '-01'))
+                            THEN CONCAT(latest.latestYear, '-', LPAD(latest.latestMonth, 2, '0'), '-01')
+                            ELSE CONCAT(req.reqYear, '-', LPAD(req.reqMonth, 2, '0'), '-01')
+                        END AS flowStartDate,
+                        CASE
+                            WHEN #{useLatestClosedPeriodFallback}
+                                 AND latest.latestYear IS NOT NULL
+                                 AND DATE(CONCAT(req.reqYear, '-', LPAD(req.reqMonth, 2, '0'), '-01')) &gt;
+                                     DATE(CONCAT(latest.latestYear, '-', LPAD(latest.latestMonth, 2, '0'), '-01'))
+                            THEN LAST_DAY(CONCAT(latest.latestYear, '-', LPAD(latest.latestMonth, 2, '0'), '-01'))
+                            ELSE #{endDate}
+                        END AS flowEndDate
+                    FROM (
+                        SELECT
+                            YEAR(STR_TO_DATE(#{endDate}, '%Y-%m-%d')) AS reqYear,
+                            MONTH(STR_TO_DATE(#{endDate}, '%Y-%m-%d')) AS reqMonth
+                    ) req
+                    LEFT JOIN (
+                        SELECT
+                            p2.年份 AS latestYear,
+                            p2.月份 AS latestMonth
+                        FROM FUND_PERIOD p2
+                        WHERE p2.是否已结账 = 1
+                          AND DATE(CONCAT(p2.年份, '-', LPAD(p2.月份, 2, '0'), '-01')) &lt;= STR_TO_DATE(#{endDate}, '%Y-%m-%d')
+                        ORDER BY p2.年份 DESC, p2.月份 DESC
+                        LIMIT 1
+                    ) latest ON 1 = 1
+                ) flow_range
+                WHERE ft.账户编号 IN
+                <foreach item="id" collection="accountIds" open="(" separator="," close=")">
+                    #{id}
+                </foreach>
+                AND DATE_FORMAT(ft.交易日期, '%Y-%m-%d') &gt;= flow_range.flowStartDate
+                AND DATE_FORMAT(ft.交易日期, '%Y-%m-%d') &lt;= flow_range.flowEndDate
+                GROUP BY ft.账户编号
+            ) flow ON flow.accountId = accounts.accountId
+        ) base
+        ORDER BY base.accountId ASC
+    </select>
+
+    <!--
+        按年查询各账户余额：
+        逻辑：对每个年份，从12月开始向前找最后一个已结账的月份，
+        然后取该月份的【下一个月】的期初余额（下月期初 = 本月期末 = 结账后余额）。
+        例如：最后结账月为3月，则取4月的期初余额作为该年数据点。
+    -->
+    <select id="selectYearlyClosedBalances"
+            resultType="com.erp.controller.report.dto.FundBalanceTrendResponse$YearlyBalanceDTO">
+        SELECT
+            b.账户编号 AS accountId,
+            b.期初余额 AS initialBalance,
+            latest.年份 AS year,
+            latest.lastClosedMonth AS closedMonth
+        FROM FUND_ACCOUNT_INITIAL_BALANCE b
+        INNER JOIN FUND_PERIOD p ON p.账期编号 = b.账期编号
+        INNER JOIN (
+            SELECT
+                年份,
+                MAX(月份) AS lastClosedMonth,
+                CASE WHEN MAX(月份) = 12 THEN 1 ELSE MAX(月份) + 1 END AS nextMonth,
+                CASE WHEN MAX(月份) = 12 THEN 年份 + 1 ELSE 年份 END AS nextYear
+            FROM FUND_PERIOD
+            WHERE 是否已结账 = 1
+              AND 年份 &gt;= #{startYear}
+              AND 年份 &lt;= #{endYear}
+            GROUP BY 年份
+        ) latest
+            ON p.年份 = latest.nextYear
+           AND p.月份 = latest.nextMonth
+        WHERE b.账户编号 IN
+        <foreach item="id" collection="accountIds" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        ORDER BY latest.年份 ASC, b.账户编号 ASC
+    </select>
+
+    <!-- 查询当天各账户按笔的资金流水明细（today 模式专用） -->
+    <select id="selectTransactionFlows"
+            resultType="com.erp.controller.report.dto.FundBalanceTrendResponse$TransactionFlowDTO">
+        SELECT
+            账户编号 AS accountId,
+            DATE_FORMAT(交易日期, '%H:%i:%s') AS transactionTime,
+            交易金额 AS amount,
+            交易类型 AS transactionType,
+            COALESCE(备注, '') AS remark
+        FROM FUND_TRANSACTION
+        WHERE 账户编号 IN
+        <foreach item="id" collection="accountIds" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        AND DATE_FORMAT(交易日期, '%Y-%m-%d') = #{date}
+        ORDER BY 交易日期 ASC
+    </select>
+
+</mapper>

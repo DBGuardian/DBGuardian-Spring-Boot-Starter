@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.customer.CustomerFollowUpMapper">
+
+    <resultMap id="CustomerFollowUpResultMap" type="com.erp.entity.customer.CustomerFollowUp">
+        <id column="跟进记录编号" property="followUpId"/>
+        <result column="客户编码" property="customerId"/>
+        <result column="业务员编码" property="employeeId"/>
+        <result column="联系人姓名" property="contactName"/>
+        <result column="联系人电话" property="contactPhone"/>
+        <result column="创建人编码" property="creatorId"/>
+        <result column="备注" property="remark"/>
+        <result column="创建时间" property="createTime"/>
+        <result column="更新时间" property="updateTime"/>
+        <result column="customerName" property="customerName"/>
+        <result column="employeeName" property="employeeName"/>
+        <result column="creatorName" property="creatorName"/>
+    </resultMap>
+
+    <sql id="BaseSelectSql">
+        SELECT
+            f.跟进记录编号,
+            f.客户编码,
+            f.业务员编码,
+            f.联系人姓名,
+            f.联系人电话,
+            f.创建人编码,
+            f.备注,
+            f.创建时间,
+            f.更新时间,
+            c.企业名称 AS customerName,
+            e.员工姓名 AS employeeName,
+            creator.员工姓名 AS creatorName
+        FROM CUSTOMER_FOLLOW_UP f
+        LEFT JOIN CUSTOMER c ON f.客户编码 = c.客户编码
+        LEFT JOIN EMPLOYEE e ON f.业务员编码 = e.员工编码
+        LEFT JOIN EMPLOYEE creator ON f.创建人编码 = creator.员工编码
+    </sql>
+
+    <select id="selectByEmployeeId" resultMap="CustomerFollowUpResultMap">
+        <include refid="BaseSelectSql"/>
+        WHERE f.业务员编码 = #{employeeId}
+        ORDER BY f.创建时间 DESC
+    </select>
+
+    <select id="selectByCustomerId" resultMap="CustomerFollowUpResultMap">
+        <include refid="BaseSelectSql"/>
+        WHERE f.客户编码 = #{customerId}
+        ORDER BY f.创建时间 DESC
+    </select>
+
+    <select id="selectByCustomerIdAndEmployeeId" resultMap="CustomerFollowUpResultMap">
+        <include refid="BaseSelectSql"/>
+        WHERE f.客户编码 = #{customerId}
+        AND f.业务员编码 = #{employeeId}
+        ORDER BY f.创建时间 DESC
+    </select>
+
+    <!-- 分页查询当前用户的客户跟进记录（支持多条件筛选、模糊查询、排序） -->
+    <select id="selectPageByEmployeeId" resultMap="CustomerFollowUpResultMap">
+        <include refid="BaseSelectSql"/>
+        WHERE 1=1
+        <!-- 数据范围过滤：如果设置了"仅查看自己"，则只查看自己创建的记录，否则查看全部记录 -->
+        <if test="creatorFilter != null">
+            AND f.创建人编码 = #{creatorFilter}
+        </if>
+        <if test="customerId != null">
+            AND f.客户编码 = #{customerId}
+        </if>
+        <if test="contactName != null and contactName != ''">
+            AND f.联系人姓名 LIKE CONCAT('%', #{contactName}, '%')
+        </if>
+        <if test="contactPhone != null and contactPhone != ''">
+            AND f.联系人电话 LIKE CONCAT('%', #{contactPhone}, '%')
+        </if>
+        <if test="startDate != null and startDate != ''">
+            AND DATE(f.创建时间) &gt;= #{startDate}
+        </if>
+        <if test="endDate != null and endDate != ''">
+            AND DATE(f.创建时间) &lt;= #{endDate}
+        </if>
+        <choose>
+            <when test="orderBy != null and orderBy != ''">
+                ORDER BY
+                <choose>
+                    <when test="orderBy == 'followUpId'">f.跟进记录编号</when>
+                    <when test="orderBy == 'createTime'">f.创建时间</when>
+                    <when test="orderBy == 'customerName'">c.企业名称</when>
+                    <when test="orderBy == 'employeeName'">e.员工姓名</when>
+                    <otherwise>f.创建时间</otherwise>
+                </choose>
+                <choose>
+                    <when test="orderDirection == 'asc'">ASC</when>
+                    <when test="orderDirection == 'desc'">DESC</when>
+                    <otherwise>DESC</otherwise>
+                </choose>
+                <if test="orderBy != 'followUpId'">
+                    , f.跟进记录编号 DESC
+                </if>
+            </when>
+            <otherwise>
+                ORDER BY f.创建时间 DESC, f.跟进记录编号 DESC
+            </otherwise>
+        </choose>
+    </select>
+
+    <!-- 批量删除客户跟进记录 -->
+    <delete id="deleteBatchByIds">
+        DELETE FROM CUSTOMER_FOLLOW_UP
+        WHERE 跟进记录编号 IN
+        <foreach collection="followUpIds" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        AND 创建人编码 = #{employeeId}
+    </delete>
+
+</mapper>

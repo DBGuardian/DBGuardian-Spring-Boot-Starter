@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.contract.BusinessContractMapper">
+
+    <!-- ResultMap：BUSINESS_CONTRACT 表所有字段（含冗余存储的业务员/甲乙方/收款卡信息）
+         设计原则：本表数据完整独立，关联编号（业务员编号/危废合同编号）仅用于审查溯源 -->
+    <resultMap id="BusinessContractResultMap" type="com.erp.entity.contract.BusinessContract">
+        <id     column="合同编号"     property="contractId"/>
+        <result column="合同单号"     property="contractNo"/>
+        <result column="危废合同编号" property="hazardousContractId"/>
+        <result column="hazardousContractNo" property="hazardousContractNo"/>
+        <!-- 关联编号（仅溯源） -->
+        <result column="业务员编号"   property="salespersonId"/>
+        <!-- 甲方信息（业务员 + 合作公司，冗余） -->
+        <result column="业务员姓名"   property="salespersonName"/>
+        <result column="业务员电话"   property="salespersonPhone"/>
+        <result column="业务员身份证号" property="salespersonIdCard"/>
+        <result column="甲方名称"     property="partyAName"/>
+        <result column="甲方统一社会信用代码" property="partyACreditCode"/>
+        <!-- 乙方信息（冗余） -->
+        <result column="乙方名称"     property="partyBName"/>
+        <result column="乙方统一社会信用代码" property="partyBCreditCode"/>
+        <result column="乙方联系人"   property="partyBContactPerson"/>
+        <result column="乙方联系电话" property="partyBContactPhone"/>
+        <!-- 收款卡信息（冗余） -->
+        <result column="开户银行"     property="bankName"/>
+        <result column="银行卡号"     property="cardNumber"/>
+        <result column="账户名称"     property="accountName"/>
+        <!-- 审核与状态 -->
+        <result column="合同状态"     property="status"/>
+        <result column="审核意见"     property="auditOpinion"/>
+        <result column="审核人编码"   property="auditorId"/>
+        <result column="审核人姓名"   property="auditorName"/>
+        <result column="审核时间"     property="auditTime"/>
+        <!-- 合同期限 -->
+        <result column="签订时间"     property="signTime"/>
+        <result column="有效期开始"   property="validFrom"/>
+        <result column="有效期结束"   property="validTo"/>
+        <!-- 合同文件 -->
+        <result column="合同文件编号" property="contractFileId"/>
+        <result column="合同文件路径" property="contractFilePath"/>
+        <!-- 其他 -->
+        <result column="备注"         property="remark"/>
+        <result column="创建人编码"   property="creatorId"/>
+        <result column="创建人姓名"   property="creatorName"/>
+        <result column="创建时间"     property="createTime"/>
+        <result column="更新时间"     property="updateTime"/>
+    </resultMap>
+
+    <!-- 分页列表查询字段：LEFT JOIN CONTRACT 取危废合同号 -->
+    <sql id="ListSelectFields">
+        bc.合同编号,
+        bc.合同单号,
+        bc.危废合同编号,
+        c.合同号 AS hazardousContractNo,
+        bc.业务员编号,
+        bc.业务员姓名,
+        bc.业务员电话,
+        bc.业务员身份证号,
+        bc.甲方名称,
+        bc.甲方统一社会信用代码,
+        bc.乙方名称,
+        bc.乙方统一社会信用代码,
+        bc.乙方联系人,
+        bc.乙方联系电话,
+        bc.开户银行,
+        bc.银行卡号,
+        bc.账户名称,
+        bc.合同状态,
+        bc.审核意见,
+        bc.审核人编码,
+        bc.审核人姓名,
+        bc.审核时间,
+        bc.签订时间,
+        bc.有效期开始,
+        bc.有效期结束,
+        bc.备注,
+        bc.创建人编码,
+        bc.创建人姓名,
+        bc.创建时间,
+        bc.合同文件编号,
+        bc.合同文件路径
+    </sql>
+
+    <!-- 动态 WHERE 条件：直接匹配 BUSINESS_CONTRACT 冗余字段，无需 JOIN SALESPERSON -->
+    <sql id="ListWhereConditions">
+        <where>
+            bc.是否删除 = 0
+            <if test="contractNo != null and contractNo != ''">
+                AND bc.合同单号 LIKE CONCAT('%', #{contractNo}, '%')
+            </if>
+            <if test="salespersonName != null and salespersonName != ''">
+                AND bc.业务员姓名 LIKE CONCAT('%', #{salespersonName}, '%')
+            </if>
+            <if test="companyName != null and companyName != ''">
+                AND bc.甲方名称 LIKE CONCAT('%', #{companyName}, '%')
+            </if>
+            <if test="status != null and status != ''">
+                AND bc.合同状态 = #{status}
+            </if>
+            <if test="signTimeStart != null and signTimeStart != ''">
+                AND bc.创建时间 &gt;= #{signTimeStart}
+            </if>
+            <if test="signTimeEnd != null and signTimeEnd != ''">
+                AND bc.创建时间 &lt;= CONCAT(#{signTimeEnd}, ' 23:59:59')
+            </if>
+            <if test="creatorFilter != null">
+                AND bc.创建人编码 = #{creatorFilter}
+            </if>
+        </where>
+    </sql>
+
+    <!-- 分页查询列表（LEFT JOIN CONTRACT 取危废合同号） -->
+    <select id="selectPageList" resultMap="BusinessContractResultMap">
+        SELECT
+        <include refid="ListSelectFields"/>
+        FROM BUSINESS_CONTRACT bc
+        LEFT JOIN CONTRACT c ON c.合同编号 = bc.危废合同编号
+        <include refid="ListWhereConditions"/>
+        <choose>
+            <when test="sortField != null and sortField != ''">
+                <choose>
+                    <when test="sortField == 'contractId'">ORDER BY bc.合同编号</when>
+                    <when test="sortField == 'contractNo'">ORDER BY bc.合同单号</when>
+                    <when test="sortField == 'salespersonName'">ORDER BY bc.业务员姓名</when>
+                    <when test="sortField == 'companyName'">ORDER BY bc.甲方名称</when>
+                    <when test="sortField == 'status'">ORDER BY bc.合同状态</when>
+                    <otherwise>ORDER BY bc.创建时间</otherwise>
+                </choose>
+                <choose>
+                    <when test="sortOrder == 'asc'"> ASC</when>
+                    <otherwise> DESC</otherwise>
+                </choose>
+            </when>
+            <otherwise>ORDER BY bc.创建时间 DESC</otherwise>
+        </choose>
+        LIMIT #{offset}, #{size}
+    </select>
+
+    <!-- 查询总数 -->
+    <select id="selectPageCount" resultType="long">
+        SELECT COUNT(1)
+        FROM BUSINESS_CONTRACT bc
+        <include refid="ListWhereConditions"/>
+    </select>
+
+    <!-- 业务合同列表专用查询（不分页）
+         返回：BUSINESS_CONTRACT 的合同编号/单号/业务员姓名/业务员电话/业务员身份证号/甲方名称/甲方统一社会信用代码/状态
+               + CONTRACT 的合同编号/合同号
+               + 当前业务合同下未关联业务结算单的危废结算单数量
+         仅查"执行中"或"已完结"状态的业务合同，按创建时间倒序 -->
+    <select id="selectForSettlement" resultType="java.util.Map">
+        SELECT
+            bc.合同编号              AS businessContractId,
+            bc.合同单号              AS businessContractNo,
+            bc.业务员姓名            AS salespersonName,
+            bc.业务员电话            AS salespersonPhone,
+            bc.业务员身份证号        AS salespersonIdCard,
+            bc.甲方名称              AS partyAName,
+            bc.甲方统一社会信用代码  AS partyACreditCode,
+            bc.合同状态              AS status,
+            c.合同编号               AS contractId,
+            c.合同号                 AS contractNo,
+            COALESCE(usc.unlinkedSettlementCount, 0) AS unlinkedSettlementCount
+        FROM BUSINESS_CONTRACT bc
+        LEFT JOIN CONTRACT c ON c.合同编号 = bc.危废合同编号
+        LEFT JOIN (
+            SELECT
+                s.合同编号 AS contractId,
+                COUNT(1) AS unlinkedSettlementCount
+            FROM SETTLEMENT s
+            LEFT JOIN BUSINESS_FEE_SETTLEMENT_REL rel
+                ON rel.危废结算单编号 = s.结算单编号
+            WHERE rel.业务序号 IS NULL
+            GROUP BY s.合同编号
+        ) usc ON usc.contractId = bc.危废合同编号
+        WHERE bc.是否删除 = 0
+          AND bc.合同状态 IN ('执行中', '已完结')
+        ORDER BY bc.创建时间 DESC
+    </select>
+
+    <!-- 统计游离业务费结算单数量（未关联业务合同的业务费结算单） -->
+    <select id="countOrphanBusinessFeeSettlements" resultType="long">
+        SELECT COUNT(1)
+        FROM BUSINESS_FEE_HEADER bf
+        WHERE bf.业务合同编号 IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM BUSINESS_FEE_SETTLEMENT_REL rel
+              WHERE rel.业务序号 = bf.业务序号
+          )
+    </select>
+
+    <!-- 根据危废合同编号查询其合同号 -->
+    <select id="selectHazardousContractNo" resultType="java.lang.String">
+        SELECT 合同号 FROM CONTRACT WHERE 合同编号 = #{hazardousContractId} AND 是否删除 = 0 LIMIT 1
+    </select>
+
+</mapper>

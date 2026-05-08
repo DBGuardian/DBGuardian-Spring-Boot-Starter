@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.finance.SettlementWasteDetailMapper">
+
+    <resultMap id="WarehousingWasteDetailVOMap" type="com.erp.controller.finance.dto.WarehousingWasteDetailVO">
+        <result column="入库危废明细编号" property="warehousingWasteItemId" />
+        <result column="入库单编号" property="warehousingId" />
+        <result column="入库单号" property="warehousingCode" />
+        <result column="入库时间" property="warehousingTime" />
+        <result column="废物名称" property="wasteName" />
+        <result column="废物代码" property="wasteCode" />
+        <result column="废物形态" property="form" />
+        <result column="基本计量单位" property="basicUnit" />
+        <result column="辅助计量单位" property="auxiliaryUnit" />
+        <result column="是否启用辅助核算" property="enableAuxiliaryAccounting" />
+        <result column="实际收运数量" property="quantity" />
+        <result column="实际收运辅助数量" property="auxiliaryQuantity" />
+        <result column="付款方" property="payer" />
+        <result column="备注" property="remark" />
+    </resultMap>
+
+    <resultMap id="MergedWarehousingWasteDetailVOMap" type="com.erp.controller.finance.dto.MergedWarehousingWasteDetailVO">
+        <result column="废物名称" property="wasteName" />
+        <result column="废物代码" property="wasteCode" />
+        <result column="总数量" property="totalQuantity" />
+        <result column="基本计量单位" property="basicUnit" />
+        <result column="辅助计量单位" property="auxiliaryUnit" />
+        <result column="总辅助数量" property="totalAuxiliaryQuantity" />
+        <result column="付款方" property="payer" />
+        <result column="来源数量" property="sourceCount" />
+    </resultMap>
+
+    <resultMap id="SettledWasteDetailVOMap" type="com.erp.controller.settlement.dto.SettledWasteDetailVO">
+        <result column="废物类别" property="wasteCategory" />
+        <result column="废物名称" property="wasteName" />
+        <result column="废物代码" property="wasteCode" />
+        <result column="累积基本结算数量" property="totalBasicQuantity" />
+        <result column="累积辅助结算数量" property="totalAuxiliaryQuantity" />
+        <result column="基本计量单位" property="basicUnit" />
+        <result column="辅助计量单位" property="auxiliaryUnit" />
+    </resultMap>
+
+    <!-- 查询指定入库单是否已被结算 -->
+    <select id="selectSettledWarehousingCodes" resultType="java.lang.String">
+        SELECT DISTINCT swd.关联来源单号
+        FROM SETTLEMENT_WASTE_DETAIL swd
+        WHERE swd.关联来源类型 = 'WAREHOUSING'
+        AND swd.关联来源单号 IS NOT NULL
+        AND swd.关联来源单号 IN
+        <foreach item="code" collection="warehousingCodes" open="(" separator="," close=")">
+            #{code}
+        </foreach>
+    </select>
+
+    <!-- 根据入库单号列表获取入库危废明细 -->
+    <select id="selectWarehousingWasteDetailsByCodes" resultMap="WarehousingWasteDetailVOMap">
+        SELECT
+            wwi.入库危废明细编号,
+            wwi.入库单编号,
+            w.入库单号,
+            w.入库时间,
+            wwi.废物名称,
+            wwi.废物代码,
+            wwi.废物形态,
+            wwi.基本计量单位,
+            wwi.辅助计量单位,
+            CASE WHEN wwi.辅助计量单位 IS NOT NULL AND wwi.辅助计量单位 != '' THEN 1 ELSE 0 END 是否启用辅助核算,
+            wwi.实际收运数量,
+            wwi.实际收运辅助数量,
+            CASE WHEN wwi.实际收运数量 > 0 THEN '乙方' ELSE '甲方' END 付款方,
+            wwi.备注
+        FROM WAREHOUSING_WASTE_ITEM wwi
+        JOIN WAREHOUSING w ON wwi.入库单编号 = w.入库单编号
+        WHERE w.入库单号 IN
+        <foreach item="code" collection="warehousingCodes" open="(" separator="," close=")">
+            #{code}
+        </foreach>
+        ORDER BY w.入库时间 DESC, wwi.入库危废明细编号
+    </select>
+
+    <!-- 根据入库单号获取同类项合并后的明细 -->
+    <select id="selectMergedWarehousingWasteDetails" resultMap="MergedWarehousingWasteDetailVOMap">
+        SELECT
+            wwi.废物名称,
+            wwi.废物代码,
+            SUM(wwi.实际收运数量) 总数量,
+            wwi.基本计量单位,
+            wwi.辅助计量单位,
+            SUM(CASE WHEN wwi.辅助数量 IS NOT NULL THEN wwi.辅助数量 ELSE 0 END) 总辅助数量,
+            CASE WHEN SUM(wwi.实际收运数量) > 0 THEN '乙方' ELSE '甲方' END 付款方,
+            COUNT(*) 来源数量
+        FROM WAREHOUSING_WASTE_ITEM wwi
+        JOIN WAREHOUSING w ON wwi.入库单编号 = w.入库单编号
+        WHERE w.入库单号 IN
+        <foreach item="code" collection="warehousingCodes" open="(" separator="," close=")">
+            #{code}
+        </foreach>
+        GROUP BY wwi.废物名称, wwi.废物代码, wwi.基本计量单位, wwi.辅助计量单位
+        ORDER BY wwi.废物代码
+    </select>
+
+    <!-- 查询已结算的废物明细记录 -->
+    <select id="selectSettledWasteDetails" resultType="com.erp.entity.settlement.SettlementWasteDetail">
+        SELECT
+            swd.*
+        FROM SETTLEMENT s
+        INNER JOIN SETTLEMENT_WASTE_DETAIL swd ON s.结算单编号 = swd.结算单编号
+        INNER JOIN SETTLEMENT_WASTE_INFO swi ON swd.明细编号 = swi.结算明细编号
+        WHERE s.合同号 = #{contractCode}
+            AND s.状态 IN ('已审核', '已结算')
+            AND swi.废物类别 = #{wasteCategory}
+            AND swi.废物名称 = #{wasteName}
+            AND swi.废物代码 = #{wasteCode}
+        ORDER BY s.审核时间 DESC
+    </select>
+
+    <!-- 批量查询已结算的废物明细记录（合并同类项） -->
+    <select id="selectMergedSettledWasteDetails" resultMap="SettledWasteDetailVOMap">
+        SELECT
+            swi.废物类别,
+            swi.废物名称,
+            swi.废物代码,
+            COALESCE(SUM(swd.基本结算数量), 0) 累积基本结算数量,
+            COALESCE(SUM(swd.辅助结算数量), 0) 累积辅助结算数量,
+            CASE
+                WHEN COUNT(DISTINCT swd.基本计量单位) = 1 THEN MAX(swd.基本计量单位)
+                ELSE '吨'
+            END 基本计量单位,
+            CASE
+                WHEN COUNT(DISTINCT swd.辅助计量单位) = 1 THEN MAX(swd.辅助计量单位)
+                ELSE NULL
+            END 辅助计量单位
+        FROM SETTLEMENT s
+        INNER JOIN SETTLEMENT_WASTE_DETAIL swd ON s.结算单编号 = swd.结算单编号
+        INNER JOIN SETTLEMENT_WASTE_INFO swi ON swd.明细编号 = swi.结算明细编号
+        WHERE s.合同号 = #{contractCode}
+            AND s.状态 IN ('已审核', '已结算', '已收款', '部分收款')
+            <if test="wasteItems != null and wasteItems.size() > 0">
+                AND (
+                    <foreach item="item" collection="wasteItems" separator=" OR ">
+                        (swi.废物类别 = #{item.wasteCategory}
+                         AND swi.废物名称 = #{item.wasteName}
+                         AND swi.废物代码 = #{item.wasteCode})
+                    </foreach>
+                )
+            </if>
+        GROUP BY swi.废物类别, swi.废物名称, swi.废物代码
+        ORDER BY swi.废物代码
+    </select>
+
+    <!-- 根据结算单ID计算明细总金额 -->
+    <select id="selectTotalAmountBySettlementId" resultType="java.math.BigDecimal">
+        SELECT COALESCE(SUM(金额), 0)
+        FROM SETTLEMENT_WASTE_DETAIL
+        WHERE 结算单编号 = #{settlementId}
+          AND 是否删除 = 0
+    </select>
+
+</mapper>

@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.finance.FundPeriodMapper">
+    <!-- 账期管理已重新设计，后续将重新实现相关功能 -->
+    <!-- 保留基础XML结构供后续扩展 -->
+
+    <!-- 分页查询账期列表 -->
+    <select id="selectFundPeriodPage" resultType="com.erp.controller.finance.dto.FundPeriodListItemResponse">
+        SELECT
+            fp.`账期编号`       AS periodId,
+            fp.`账期编码`     AS periodCode,
+            fp.`年份`           AS year,
+            fp.`月份`           AS month,
+            DATE_FORMAT(DATE(CONCAT(fp.`年份`, '-', LPAD(fp.`月份`, 2, '0'), '-01')), '%Y-%m-%d') AS startDate,
+            DATE_FORMAT(LAST_DAY(DATE(CONCAT(fp.`年份`, '-', LPAD(fp.`月份`, 2, '0'), '-01'))), '%Y-%m-%d') AS endDate,
+            fp.`组织编号`     AS organizationId,
+            fo.`组织名称`     AS organizationName,
+            fp.`是否已结账`               AS isSettled,
+            fp.`结账时间`            AS settlementTime,
+            fp.`结账人编码`            AS settlementUserId,
+            emp.`员工姓名`           AS createUserName,
+            DATE_FORMAT(fp.`创建时间`, '%Y-%m-%d %H:%i:%s') AS createTime,
+            DATE_FORMAT(fp.`更新时间`, '%Y-%m-%d %H:%i:%s') AS updateTime
+        FROM fund_period fp
+        LEFT JOIN fund_organization fo ON fp.`组织编号` = fo.`组织编号`
+        LEFT JOIN EMPLOYEE emp ON fp.`创建人编码` = emp.`员工编码`
+        <where>
+            AND fp.`组织编号` = #{query.organizationId}
+            <if test="query.year != null">
+                AND fp.`年份` = #{query.year}
+            </if>
+            <if test="query.isSettled != null">
+                AND fp.`是否已结账` = #{query.isSettled}
+            </if>
+            <if test="query.periodCode != null and query.periodCode != ''">
+                AND fp.`账期编码` LIKE CONCAT('%', #{query.periodCode}, '%')
+            </if>
+        </where>
+        <choose>
+            <when test="query.sortField != null and query.sortField != ''">
+                ORDER BY
+                <choose>
+                    <when test="query.sortField == 'periodCode'">
+                        fp.`账期编码`
+                    </when>
+                    <when test="query.sortField == 'year'">
+                        fp.`年份`
+                    </when>
+                    <when test="query.sortField == 'month'">
+                        fp.`月份`
+                    </when>
+                    <when test="query.sortField == 'isSettled'">
+                        fp.`是否已结账`
+                    </when>
+                    <when test="query.sortField == 'createTime'">
+                        fp.`创建时间`
+                    </when>
+                    <when test="query.sortField == 'updateTime'">
+                        fp.`更新时间`
+                    </when>
+                    <otherwise>
+                        fp.`创建时间`
+                    </otherwise>
+                </choose>
+                <if test="query.sortOrder == 'desc'">
+                    DESC
+                </if>
+                <if test="query.sortOrder == 'asc'">
+                    ASC
+                </if>
+            </when>
+            <otherwise>
+                ORDER BY fp.`创建时间` DESC
+            </otherwise>
+        </choose>
+    </select>
+
+    <!-- 查询账期年份列表 -->
+    <select id="selectFundPeriodYears" resultType="java.lang.Integer">
+        SELECT DISTINCT fp.`年份` AS year
+        FROM fund_period fp
+        ORDER BY fp.`年份` DESC
+    </select>
+</mapper>
+

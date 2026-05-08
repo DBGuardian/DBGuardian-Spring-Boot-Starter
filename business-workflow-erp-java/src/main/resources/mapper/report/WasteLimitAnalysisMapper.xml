@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.report.WasteLimitAnalysisMapper">
+
+    <!-- ==================== 查询所有废物类别 ==================== -->
+    <!--
+        功能描述：查询所有有效废物类别及其限额
+        排序：按限额升序（限额小的在前），限额相同则按类别编码升序
+        说明：不按时间过滤，返回所有类别
+    -->
+    <select id="selectAllCategories" resultType="com.erp.controller.report.dto.WasteLimitAnalysisResponse$WasteCategoryDTO">
+        SELECT
+            废物类别编号  AS categoryId,
+            废物类别      AS categoryCode,
+            废物类别名称  AS categoryName,
+            限额          AS wasteLimit,
+            限额开始时间  AS limitStartDate,
+            限额结束时间  AS limitEndDate
+        FROM HAZARDOUS_WASTE_CATEGORY
+        <if test="wasteCategories != null and wasteCategories.length > 0">
+            WHERE 废物类别 IN
+            <foreach collection="wasteCategories" item="cat" open="(" close=")" separator=",">
+                #{cat}
+            </foreach>
+        </if>
+        ORDER BY
+            CASE WHEN 限额 IS NULL THEN 1 ELSE 0 END,  -- 无限额排在后面
+            限额 ASC,
+            废物类别 ASC
+    </select>
+
+    <!-- ==================== 查询合同签订量（计划转移数量） ==================== -->
+    <!--
+        功能描述：查询指定时间范围内各废物类别的合同签订量（计划转移数量）
+        统计口径：
+          - 合同状态：已通过、执行中、已完结、已归档
+          - 来源表：CONTRACT_WASTE_ITEM → CONTRACT_ITEM → CONTRACT
+          - 统计字段：CONTRACT_WASTE_ITEM.计划转移数量（单位：吨）
+          - 日期字段：CONTRACT.签订日期
+        说明：
+          - 按 CONTRACT.签订日期 过滤时间区间
+          - 合同状态排除 草稿、待审核、已驳回、已拒绝、作废
+    -->
+    <select id="selectPlannedByPeriod" resultType="com.erp.controller.report.dto.WasteLimitAnalysisResponse$WasteCategoryDTO">
+        SELECT
+            hwc.废物类别        AS categoryCode,
+            SUM(cw.计划转移数量) AS planned
+        FROM HAZARDOUS_WASTE_CATEGORY hwc
+        LEFT JOIN HAZARDOUS_WASTE_ITEM hwi ON hwi.废物类别编号 = hwc.废物类别编号
+        LEFT JOIN CONTRACT_WASTE_ITEM cw ON cw.危废条目编号 = hwi.条目编号
+        LEFT JOIN CONTRACT_ITEM ci ON ci.合同条目编号 = cw.合同条目编号
+        LEFT JOIN CONTRACT c ON c.合同编号 = ci.合同编号
+        WHERE
+          c.合同状态 IN ('已通过', '执行中', '已完结', '已归档')
+          AND c.签订时间 IS NOT NULL
+          AND DATE(c.签订时间) &gt;= STR_TO_DATE(#{startDate}, '%Y-%m-%d')
+          AND DATE(c.签订时间) &lt;= STR_TO_DATE(#{endDate},   '%Y-%m-%d')
+        <if test="wasteCategories != null and wasteCategories.length > 0">
+            AND hwc.废物类别 IN
+            <foreach collection="wasteCategories" item="cat" open="(" close=")" separator=",">
+                #{cat}
+            </foreach>
+        </if>
+        GROUP BY hwc.废物类别
+    </select>
+
+    <!-- ==================== 查询实际收运量 ==================== -->
+    <!--
+        功能描述：查询指定时��范围内各废物类别的实际收运量
+        统计口径：
+          - 来源表：WAREHOUSING_WASTE_ITEM（入库单危废明细）
+          - 统计字段：WAREHOUSING_WASTE_ITEM.实际收运数量（单位：吨）
+          - 日期字段：WAREHOUSING_WASTE_ITEM.实际入库日期
+        说明：
+          - 按 实际入库日期 过滤时间区间
+    -->
+    <select id="selectActualByPeriod" resultType="com.erp.controller.report.dto.WasteLimitAnalysisResponse$WasteCategoryDTO">
+        SELECT
+            hwc.废物类别       AS categoryCode,
+            SUM(wi.实际收运数量) AS actual
+        FROM HAZARDOUS_WASTE_CATEGORY hwc
+        LEFT JOIN HAZARDOUS_WASTE_ITEM hwi ON hwi.废物类别编号 = hwc.废物类别编号
+        LEFT JOIN WAREHOUSING_WASTE_ITEM wi ON wi.危废条目编号 = hwi.条目编号
+        WHERE
+          wi.实际入库日期 IS NOT NULL
+          AND DATE(wi.实际入库日期) &gt;= STR_TO_DATE(#{startDate}, '%Y-%m-%d')
+          AND DATE(wi.实际入库日期) &lt;= STR_TO_DATE(#{endDate},   '%Y-%m-%d')
+        <if test="wasteCategories != null and wasteCategories.length > 0">
+            AND hwc.废物类别 IN
+            <foreach collection="wasteCategories" item="cat" open="(" close=")" separator=",">
+                #{cat}
+            </foreach>
+        </if>
+        GROUP BY hwc.废物类别
+    </select>
+
+    <!-- ==================== 查询已生成联单量 ==================== -->
+    <!--
+        功能描述：查询指定时间范围内各废物类别的已生成联单量
+        统计口径：
+          - 来源表：TRANSFER_MANIFEST_ITEM（转移联单子表）
+          - 统计字段：TRANSFER_MANIFEST_ITEM.确认数量（单位：吨）
+          - 日期字段：TRANSFER_MANIFEST_ITEM.创建时间（或关联主表的确认时间）
+        说明：
+          - 按 创建时间 过滤时间区间
+          - 若业务上以联单确认时间为准，需关联 TRANSFER_MANIFEST 主表
+    -->
+    <select id="selectManifestByPeriod" resultType="com.erp.controller.report.dto.WasteLimitAnalysisResponse$WasteCategoryDTO">
+        SELECT
+            hwc.废物类别        AS categoryCode,
+            SUM(tmi.确认数量)    AS manifest
+        FROM HAZARDOUS_WASTE_CATEGORY hwc
+        LEFT JOIN HAZARDOUS_WASTE_ITEM hwi ON hwi.废物类别编号 = hwc.废物类别编号
+        LEFT JOIN TRANSFER_MANIFEST_ITEM tmi ON tmi.废物类别 = hwc.废物类别
+        WHERE
+          tmi.是否删除 = 0
+          AND tmi.创建时间 IS NOT NULL
+          AND DATE(tmi.创建时间) &gt;= STR_TO_DATE(#{startDate}, '%Y-%m-%d')
+          AND DATE(tmi.创建时间) &lt;= STR_TO_DATE(#{endDate},   '%Y-%m-%d')
+        <if test="wasteCategories != null and wasteCategories.length > 0">
+            AND hwc.废物类别 IN
+            <foreach collection="wasteCategories" item="cat" open="(" close=")" separator=",">
+                #{cat}
+            </foreach>
+        </if>
+        GROUP BY hwc.废物类别
+    </select>
+
+</mapper>

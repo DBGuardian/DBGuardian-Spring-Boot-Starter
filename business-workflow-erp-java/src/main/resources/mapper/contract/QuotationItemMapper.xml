@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.contract.QuotationItemMapper">
+
+    <resultMap id="QuotationItemResultMap" type="com.erp.entity.contract.QuotationItem">
+        <id column="报价条目编号" property="quotationItemId"/>
+        <result column="报价单编号" property="quotationId"/>
+        <result column="报价模式" property="quotationMode"/>
+        <result column="付款方" property="payer"/>
+        <result column="计价方案" property="pricingPlan"/>
+        <result column="备注" property="remark"/>
+        <result column="小计摘要" property="subtotalSummary"/>
+        <result column="创建时间" property="createTime"/>
+        <result column="更新时间" property="updateTime"/>
+    </resultMap>
+
+    <select id="selectByQuotationId" resultMap="QuotationItemResultMap">
+        SELECT
+            报价条目编号,
+            报价单编号,
+            报价模式,
+            付款方,
+            计价方案,
+            备注,
+            小计摘要,
+            创建时间,
+            更新时间
+        FROM QUOTATION_ITEM
+        WHERE 报价单编号 = #{quotationId}
+        ORDER BY 创建时间 ASC
+    </select>
+
+    <select id="selectByQuotationIds" resultMap="QuotationItemResultMap">
+        SELECT
+            报价条目编号,
+            报价单编号,
+            报价模式,
+            付款方,
+            计价方案,
+            备注,
+            小计摘要,
+            创建时间,
+            更新时间
+        FROM QUOTATION_ITEM
+        WHERE 报价单编号 IN
+        <foreach item="id" collection="quotationIds" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        ORDER BY 创建时间 ASC
+    </select>
+
+    <delete id="deleteByQuotationId">
+        DELETE FROM QUOTATION_ITEM
+        WHERE 报价单编号 = #{quotationId}
+    </delete>
+
+</mapper>
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.production.WeighingSlipMapper">
+
+    <!-- 结果映射 -->
+    <resultMap id="BaseResultMap" type="com.erp.entity.production.WeighingSlip">
+        <id column="总磅单编号" property="weighingSlipId"/>
+        <result column="总磅单号" property="weighingSlipNo"/>
+        <result column="序号" property="sequence"/>
+        <result column="日期" property="weighingDate"/>
+        <result column="一次过秤时间" property="firstWeighTime"/>
+        <result column="二次过秤时间" property="secondWeighTime"/>
+        <result column="车号" property="plateNo"/>
+        <result column="总重" property="grossWeight"/>
+        <result column="空重" property="tareWeight"/>
+        <result column="净重" property="netWeight"/>
+        <result column="总磅单照片" property="photoUrl"/>
+        <result column="状态" property="status"/>
+        <result column="创建人编码" property="creatorId"/>
+        <result column="总磅备注" property="remark"/>
+        <result column="创建时间" property="createTime"/>
+        <result column="更新时间" property="updateTime"/>
+    </resultMap>
+
+    <!-- 根据前缀查询最大总磅单号 -->
+    <select id="selectMaxWeighingSlipNoByPrefix" resultType="java.lang.String">
+        SELECT MAX(`总磅单号`)
+        FROM WEIGHING_SLIP
+        WHERE `总磅单号` LIKE CONCAT(#{prefix}, '%')
+    </select>
+
+    <!-- 根据总磅单号查询数量（用于唯一性校验） -->
+    <select id="countByWeighingSlipNo" resultType="java.lang.Integer">
+        SELECT COUNT(1)
+        FROM WEIGHING_SLIP
+        WHERE `总磅单号` = #{weighingSlipNo}
+    </select>
+
+    <!-- 根据序号查询数量（用于唯一性校验） -->
+    <select id="countBySequence" resultType="java.lang.Integer">
+        SELECT COUNT(1)
+        FROM WEIGHING_SLIP
+        WHERE `序号` = #{sequence}
+    </select>
+
+    <!-- 分页查询总磅单列表 -->
+    <select id="selectWeighingSlipPage" resultMap="BaseResultMap">
+        SELECT
+            `总磅单编号`,
+            `总磅单号`,
+            `序号`,
+            `日期`,
+            `一次过秤时间`,
+            `二次过秤时间`,
+            `车号`,
+            `总重`,
+            `空重`,
+            `净重`,
+            `总磅单照片`,
+            `状态`,
+            `创建人编码`,
+            `总磅备注`,
+            `创建时间`,
+            `更新时间`
+        FROM WEIGHING_SLIP
+        <where>
+            <if test="keyword != null and keyword != ''">
+                AND (
+                    `总磅单号` LIKE CONCAT('%', #{keyword}, '%')
+                    OR `序号` LIKE CONCAT('%', #{keyword}, '%')
+                    OR `车号` LIKE CONCAT('%', #{keyword}, '%')
+                )
+            </if>
+            <if test="weighingSlipNo != null and weighingSlipNo != ''">
+                AND `总磅单号` LIKE CONCAT('%', #{weighingSlipNo}, '%')
+            </if>
+            <if test="sequence != null and sequence != ''">
+                AND `序号` LIKE CONCAT('%', #{sequence}, '%')
+            </if>
+            <if test="plateNo != null and plateNo != ''">
+                AND `车号` LIKE CONCAT('%', #{plateNo}, '%')
+            </if>
+            <if test="status != null and status != ''">
+                AND `状态` = #{status}
+            </if>
+            <if test="startDate != null and startDate != ''">
+                AND `日期` &gt;= #{startDate}
+            </if>
+            <if test="endDate != null and endDate != ''">
+                AND `日期` &lt;= #{endDate}
+            </if>
+            <!-- 数据范围过滤：仅查看自己创建的数据 -->
+            <if test="creatorFilter != null">
+                AND `创建人编码` = #{creatorFilter}
+            </if>
+        </where>
+        ORDER BY
+        <choose>
+            <when test="orderBy != null and orderBy != ''">
+                <choose>
+                    <when test="orderBy == '总磅单号' or orderBy == 'weighingSlipNo'">`总磅单号`</when>
+                    <when test="orderBy == '序号' or orderBy == 'sequence'">`序号`</when>
+                    <when test="orderBy == '日期' or orderBy == 'weighingDate'">`日期`</when>
+                    <when test="orderBy == '一次过秤时间' or orderBy == 'firstWeighTime'">`一次过秤时间`</when>
+                    <when test="orderBy == '二次过秤时间' or orderBy == 'secondWeighTime'">`二次过秤时间`</when>
+                    <when test="orderBy == '车号' or orderBy == 'plateNo'">`车号`</when>
+                    <when test="orderBy == '总重' or orderBy == 'grossWeight'">`总重`</when>
+                    <when test="orderBy == '空重' or orderBy == 'tareWeight'">`空重`</when>
+                    <when test="orderBy == '净重' or orderBy == 'netWeight'">`净重`</when>
+                    <when test="orderBy == '状态' or orderBy == 'status'">`状态`</when>
+                    <when test="orderBy == '创建时间' or orderBy == 'createTime'">`创建时间`</when>
+                    <otherwise>`创建时间`</otherwise>
+                </choose>
+                <choose>
+                    <when test="orderDirection != null and orderDirection == 'asc'">ASC</when>
+                    <otherwise>DESC</otherwise>
+                </choose>
+            </when>
+            <otherwise>
+                `创建时间` DESC
+            </otherwise>
+        </choose>
+    </select>
+
+    <!-- 根据总磅单号查询总磅单信息 -->
+    <select id="selectByWeighingSlipNo" resultMap="BaseResultMap">
+        SELECT
+            `总磅单编号`,
+            `总磅单号`,
+            `序号`,
+            `日期`,
+            `一次过秤时间`,
+            `二次过秤时间`,
+            `车号`,
+            `总重`,
+            `空重`,
+            `净重`,
+            `总磅单照片`,
+            `状态`,
+            `创建人编码`,
+            `总磅备注`,
+            `创建时间`,
+            `更新时间`
+        FROM WEIGHING_SLIP
+        WHERE `总磅单号` = #{weighingSlipNo}
+        LIMIT 1
+    </select>
+
+</mapper>
+
+
+

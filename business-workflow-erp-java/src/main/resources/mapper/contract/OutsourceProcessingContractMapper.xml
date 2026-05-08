@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.contract.OutsourceProcessingContractMapper">
+
+    <!-- 结果映射 -->
+    <resultMap id="BaseResultMap" type="com.erp.entity.contract.OutsourceProcessingContract">
+        <id column="合同编号" property="contractId"/>
+        <result column="合同单号" property="contractNo"/>
+        <result column="甲方编码" property="partyAId"/>
+        <result column="甲方名称" property="partyAName"/>
+        <result column="甲方统一社会信用代码" property="partyACreditCode"/>
+        <result column="甲方联系人" property="partyAContact"/>
+        <result column="甲方联系电话" property="partyAContactPhone"/>
+        <result column="乙方名称" property="partyBName"/>
+        <result column="乙方统一社会信用代码" property="partyBCreditCode"/>
+        <result column="乙方联系人" property="partyBContact"/>
+        <result column="乙方联系电话" property="partyBContactPhone"/>
+        <result column="业务员编号" property="ownerEmployeeId"/>
+        <result column="业务员姓名" property="ownerEmployeeName"/>
+        <result column="业务费用结算" property="feeSettlementEnabled"/>
+        <result column="签订时间" property="signTime"/>
+        <result column="有效期开始" property="validFrom"/>
+        <result column="有效期结束" property="validTo"/>
+        <result column="合同状态" property="contractStatus"/>
+        <result column="审核人编码" property="auditorId"/>
+        <result column="审核人姓名" property="auditorName"/>
+        <result column="审核时间" property="auditTime"/>
+        <result column="审核意见" property="auditOpinion"/>
+        <result column="合同文件编号" property="contractFileId"/>
+        <result column="是否锁定" property="isLocked"/>
+        <result column="锁定时间" property="lockTime"/>
+        <result column="锁定人编码" property="lockerId"/>
+        <result column="锁定原因" property="lockReason"/>
+        <result column="备注" property="remark"/>
+        <result column="创建人编码" property="creatorId"/>
+        <result column="创建人姓名" property="creatorName"/>
+        <result column="创建时间" property="createTime"/>
+        <result column="更新时间" property="updateTime"/>
+        <result column="version" property="version"/>
+    </resultMap>
+
+    <!-- 报价明细结果映射 -->
+    <resultMap id="ItemResultMap" type="com.erp.entity.contract.OutsourceProcessingContractItem">
+        <id column="item_id" property="itemId"/>
+        <result column="contract_id" property="contractId"/>
+        <result column="row_number" property="rowNumber"/>
+        <result column="pricing_mode" property="pricingMode"/>
+        <result column="payer" property="payer"/>
+        <result column="pricing_statement" property="pricingStatement"/>
+        <result column="subtotal_summary" property="subtotalSummary"/>
+        <result column="remark" property="remark"/>
+        <result column="is_deleted" property="isDeleted"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <!-- 废物明细结果映射 -->
+    <resultMap id="WasteItemResultMap" type="com.erp.entity.contract.OutsourceProcessingContractWasteItem">
+        <id column="waste_item_id" property="wasteItemId"/>
+        <result column="item_id" property="itemId"/>
+        <result column="row_order" property="rowOrder"/>
+        <result column="hazardous_waste_item_id" property="hazardousWasteItemId"/>
+        <result column="waste_category" property="wasteCategory"/>
+        <result column="waste_code" property="wasteCode"/>
+        <result column="waste_name" property="wasteName"/>
+        <result column="waste_state" property="wasteState"/>
+        <result column="planned_quantity" property="plannedQuantity"/>
+        <result column="unlimited_quantity" property="unlimitedQuantity"/>
+        <result column="quantity_unit" property="quantityUnit"/>
+        <result column="enable_auxiliary_accounting" property="enableAuxiliaryAccounting"/>
+        <result column="aux_unit" property="auxUnit"/>
+        <result column="aux_per_base" property="auxPerBase"/>
+        <result column="aux_quantity" property="auxQuantity"/>
+        <result column="aux_unit_price" property="auxUnitPrice"/>
+        <result column="unit_price" property="unitPrice"/>
+        <result column="over_limit_price" property="overLimitPrice"/>
+        <result column="over_limit_unit" property="overLimitUnit"/>
+        <result column="floor_price" property="floorPrice"/>
+        <result column="floor_price_unit" property="floorPriceUnit"/>
+        <result column="pricing_statement" property="pricingStatement"/>
+        <result column="payer" property="payer"/>
+        <result column="remark" property="remark"/>
+        <result column="is_deleted" property="isDeleted"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <!-- 下拉列表结果映射 -->
+    <resultMap id="SelectResultMap" type="com.erp.controller.contract.dto.OutsourceProcessingContractSelectResponse">
+        <result column="contract_id" property="contractId"/>
+        <result column="contract_no" property="contractNo"/>
+        <result column="party_a_id" property="partyAId"/>
+        <result column="party_a_name" property="partyAName"/>
+        <result column="party_a_credit_code" property="partyACreditCode"/>
+        <result column="party_a_contact" property="partyAContact"/>
+        <result column="party_a_contact_phone" property="partyAContactPhone"/>
+        <result column="party_b_name" property="partyBName"/>
+        <result column="owner_employee_name" property="ownerEmployeeName"/>
+        <result column="sign_time" property="signTime"/>
+        <result column="valid_from" property="validFrom"/>
+        <result column="valid_to" property="validTo"/>
+        <result column="contract_status" property="contractStatus"/>
+    </resultMap>
+
+    <!-- 基础列 -->
+    <sql id="baseColumns">
+        opc.合同编号, opc.合同单号, opc.甲方编码, opc.甲方名称, opc.甲方统一社会信用代码,
+        opc.甲方联系人, opc.甲方联系电话, opc.乙方名称, opc.乙方统一社会信用代码,
+        opc.乙方联系人, opc.乙方联系电话, opc.业务员编号, opc.业务员姓名,
+        opc.业务费用结算, opc.签订时间, opc.有效期开始, opc.有效期结束,
+        opc.合同状态, opc.审核人编码, opc.审核人姓名, opc.审核时间, opc.审核意见,
+        opc.合同文件编号, opc.是否锁定,
+        opc.锁定时间, opc.锁定人编码, opc.锁定原因, opc.备注,
+        opc.创建人编码, opc.创建人姓名, opc.创建时间, opc.更新时间, opc.version
+    </sql>
+
+    <!-- 分页查询 -->
+    <select id="selectContractPage" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/>
+        FROM OUTSOURCE_PROCESSING_CONTRACT opc
+        <where>
+            <if test="contractNo != null and contractNo != ''">
+                AND opc.合同单号 LIKE CONCAT('%', #{contractNo}, '%')
+            </if>
+            <if test="partyAName != null and partyAName != ''">
+                AND opc.甲方名称 LIKE CONCAT('%', #{partyAName}, '%')
+            </if>
+            <if test="contractStatus != null and contractStatus != ''">
+                AND opc.合同状态 = #{contractStatus}
+            </if>
+            <if test="signTimeStart != null">
+                AND opc.签订时间 &gt;= #{signTimeStart}
+            </if>
+            <if test="signTimeEnd != null">
+                AND opc.签订时间 &lt;= #{signTimeEnd}
+            </if>
+            <if test="creatorFilter != null">
+                AND opc.创建人编码 = #{creatorFilter}
+            </if>
+        </where>
+        <if test="sortField != null and sortField != '' and sortOrder != null and sortOrder != ''">
+            ORDER BY opc.${sortField} ${sortOrder}
+        </if>
+    </select>
+
+    <!-- 详情查询 -->
+    <select id="selectDetailById" resultMap="BaseResultMap">
+        SELECT <include refid="baseColumns"/>
+        FROM OUTSOURCE_PROCESSING_CONTRACT opc
+        WHERE opc.合同编号 = #{contractId}
+    </select>
+
+    <!-- 下拉列表查询 - 返回精简字段 -->
+    <select id="selectContractSelectList" resultMap="SelectResultMap">
+        SELECT
+            opc.合同编号 AS contract_id,
+            opc.合同单号 AS contract_no,
+            opc.甲方编码 AS party_a_id,
+            opc.甲方名称 AS party_a_name,
+            opc.甲方统一社会信用代码 AS party_a_credit_code,
+            opc.甲方联系人 AS party_a_contact,
+            opc.甲方联系电话 AS party_a_contact_phone,
+            opc.乙方名称 AS party_b_name,
+            opc.业务员姓名 AS owner_employee_name,
+            opc.签订时间 AS sign_time,
+            opc.有效期开始 AS valid_from,
+            opc.有效期结束 AS valid_to,
+            opc.合同状态 AS contract_status
+        FROM OUTSOURCE_PROCESSING_CONTRACT opc
+        <where>
+            <if test="keyword != null and keyword != ''">
+                AND (opc.合同单号 LIKE CONCAT('%', #{keyword}, '%')
+                     OR opc.甲方名称 LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+        </where>
+        ORDER BY opc.创建时间 DESC
+        LIMIT 100
+    </select>
+
+</mapper>

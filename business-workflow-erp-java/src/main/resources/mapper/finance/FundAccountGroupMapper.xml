@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.finance.FundAccountGroupMapper">
+
+    <!-- 账户组合分页查询（关联创建人/更新人），支持模糊查询与字段排序 -->
+    <select id="selectFundAccountGroupPage" resultType="com.erp.controller.finance.dto.FundAccountGroupListItemResponse">
+        SELECT
+            fag.`组合编号`       AS groupId,
+            fag.`组合编码`       AS groupCode,
+            fag.`组合名称`       AS groupName,
+            fag.`是否启用`       AS enabled,
+            fag.`备注`           AS remark,
+            DATE_FORMAT(fag.`创建时间`, '%Y-%m-%d %H:%i:%s') AS createTime,
+            DATE_FORMAT(fag.`更新时间`, '%Y-%m-%d %H:%i:%s') AS updateTime,
+            e1.`员工姓名`       AS createUserName,
+            e2.`员工姓名`       AS updateUserName
+        FROM FUND_ACCOUNT_GROUP fag
+                 LEFT JOIN EMPLOYEE e1 ON fag.`创建人编码` = e1.`员工编码`
+                 LEFT JOIN EMPLOYEE e2 ON fag.`更新人编码` = e2.`员工编码`
+        <where>
+            <if test="query.groupName != null and query.groupName != ''">
+                AND fag.`组合名称` LIKE CONCAT('%', #{query.groupName}, '%')
+            </if>
+            <if test="query.isEnabled != null">
+                AND fag.`是否启用` = #{query.isEnabled}
+            </if>
+        </where>
+        <choose>
+            <when test="query.sortField != null and query.sortField != ''">
+                ORDER BY
+                <choose>
+                    <when test="query.sortField == 'groupCode'">
+                        fag.`组合编码`
+                    </when>
+                    <when test="query.sortField == 'groupName'">
+                        fag.`组合名称`
+                    </when>
+                    <when test="query.sortField == 'enabled'">
+                        fag.`是否启用`
+                    </when>
+                    <when test="query.sortField == 'createTime'">
+                        fag.`创建时间`
+                    </when>
+                    <otherwise>
+                        fag.`创建时间`
+                    </otherwise>
+                </choose>
+                <choose>
+                    <when test="query.sortOrder != null and (query.sortOrder == 'asc' or query.sortOrder == 'ASC')">
+                        ASC
+                    </when>
+                    <otherwise>
+                        DESC
+                    </otherwise>
+                </choose>
+            </when>
+            <otherwise>
+                ORDER BY fag.`创建时间` DESC
+            </otherwise>
+        </choose>
+    </select>
+
+</mapper>
+

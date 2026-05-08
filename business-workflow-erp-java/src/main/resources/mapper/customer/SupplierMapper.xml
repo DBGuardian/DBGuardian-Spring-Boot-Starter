@@ -1,0 +1,421 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.customer.SupplierMapper">
+
+    <resultMap id="SupplierResultMap" type="com.erp.entity.customer.Supplier">
+        <id column="供应商编码" property="supplierId"/>
+        <result column="企业名称" property="enterpriseName"/>
+        <result column="统一社会信用代码" property="creditCode"/>
+        <result column="地址" property="address"/>
+        <result column="电话" property="phone"/>
+        <result column="法定代表人" property="legalRepresentative"/>
+        <result column="联系人" property="contactPerson"/>
+        <result column="联系电话" property="contactPhone"/>
+        <result column="曾用名" property="formerNames"/>
+        <result column="供应商状态" property="supplierStatus"/>
+        <result column="业务员编码" property="ownerEmployeeId"/>
+        <result column="创建人编码" property="creatorId"/>
+        <result column="备注" property="remark"/>
+        <result column="创建时间" property="createTime"/>
+        <result column="更新时间" property="updateTime"/>
+        <result column="账户名称" property="accountName"/>
+        <result column="账户号码" property="accountNumber"/>
+        <result column="开户银行" property="bankName"/>
+        <result column="ownerEmployeeName" property="ownerEmployeeName"/>
+        <result column="creatorName" property="creatorName"/>
+    </resultMap>
+
+    <resultMap id="SupplierPageResponseResultMap" type="com.erp.controller.customer.dto.SupplierPageResponse">
+        <id column="供应商编码" property="supplierId"/>
+        <result column="企业名称" property="enterpriseName"/>
+        <result column="统一社会信用代码" property="creditCode"/>
+        <result column="地址" property="address"/>
+        <result column="电话" property="phone"/>
+        <result column="法定代表人" property="legalRepresentative"/>
+        <result column="联系人" property="contactPerson"/>
+        <result column="联系电话" property="contactPhone"/>
+        <result column="曾用名" property="formerNames"/>
+        <result column="供应商状态" property="supplierStatus"/>
+        <result column="业务员编码" property="ownerEmployeeId"/>
+        <!-- 列表需要返回创建人编码，用于前端根据“仅操作自己 / 操作全部”做行级按钮控制 -->
+        <result column="创建人编码" property="creatorId"/>
+        <result column="ownerEmployeeName" property="ownerEmployeeName"/>
+        <result column="creatorName" property="creatorName"/>
+        <result column="备注" property="remark"/>
+        <result column="创建时间" property="createTime"/>
+        <result column="更新时间" property="updateTime"/>
+        <result column="账户名称" property="accountName"/>
+        <result column="账户号码" property="accountNumber"/>
+        <result column="开户银行" property="bankName"/>
+    </resultMap>
+
+    <sql id="BaseSelectSql">
+        SELECT
+            s.供应商编码,
+            s.企业名称,
+            s.统一社会信用代码,
+            s.地址,
+            s.电话,
+            s.法定代表人,
+            s.联系人,
+            s.联系电话,
+            s.曾用名,
+            s.供应商状态,
+            s.业务员编码,
+            s.创建人编码,
+            s.备注,
+            s.创建时间,
+            s.更新时间,
+            s.账户名称,
+            s.账户号码,
+            s.开户银行,
+            owner.员工姓名 AS ownerEmployeeName,
+            creator.员工姓名 AS creatorName
+        FROM SUPPLIER s
+        LEFT JOIN EMPLOYEE owner ON s.业务员编码 = owner.员工编码
+        LEFT JOIN EMPLOYEE creator ON s.创建人编码 = creator.员工编码
+    </sql>
+
+    <select id="selectByCreditCode" resultMap="SupplierResultMap">
+        <include refid="BaseSelectSql"/>
+        WHERE s.统一社会信用代码 = #{creditCode}
+    </select>
+
+    <select id="selectListByCreditCode" resultType="com.erp.entity.customer.Supplier">
+        SELECT * FROM SUPPLIER WHERE 统一社会信用代码 = #{creditCode}
+    </select>
+
+    <select id="selectSupplierPage" resultMap="SupplierPageResponseResultMap">
+        SELECT
+            s.供应商编码,
+            s.企业名称,
+            s.统一社会信用代码,
+            s.地址,
+            s.电话,
+            s.法定代表人,
+            s.联系人,
+            s.联系电话,
+            s.曾用名,
+            s.供应商状态,
+            s.业务员编码,
+            s.创建人编码,
+            s.备注,
+            s.创建时间,
+            s.更新时间,
+            s.账户名称,
+            s.账户号码,
+            s.开户银行,
+            owner.员工姓名 AS ownerEmployeeName,
+            creator.员工姓名 AS creatorName
+        FROM SUPPLIER s
+        LEFT JOIN EMPLOYEE owner ON s.业务员编码 = owner.员工编码
+        LEFT JOIN EMPLOYEE creator ON s.创建人编码 = creator.员工编码
+        <where>
+            <if test="enterpriseName != null and enterpriseName != ''">
+                AND s.企业名称 LIKE CONCAT('%', #{enterpriseName}, '%')
+            </if>
+            <if test="creditCode != null and creditCode != ''">
+                AND s.统一社会信用代码 LIKE CONCAT('%', #{creditCode}, '%')
+            </if>
+            <if test="ownerEmployeeId != null">
+                AND s.业务员编码 = #{ownerEmployeeId}
+            </if>
+            <if test="ownerEmployee != null and ownerEmployee != ''">
+                AND (owner.员工姓名 LIKE CONCAT('%', #{ownerEmployee}, '%')
+                     OR CAST(s.业务员编码 AS CHAR) LIKE CONCAT('%', #{ownerEmployee}, '%'))
+            </if>
+            <if test="contactPhone != null and contactPhone != ''">
+                AND s.联系电话 LIKE CONCAT('%', #{contactPhone}, '%')
+            </if>
+            <if test="phone != null and phone != ''">
+                AND s.电话 LIKE CONCAT('%', #{phone}, '%')
+            </if>
+            <if test="contactPerson != null and contactPerson != ''">
+                AND s.联系人 LIKE CONCAT('%', #{contactPerson}, '%')
+            </if>
+            <if test="address != null and address != ''">
+                AND s.地址 LIKE CONCAT('%', #{address}, '%')
+            </if>
+            <if test="legalRepresentative != null and legalRepresentative != ''">
+                AND s.法定代表人 LIKE CONCAT('%', #{legalRepresentative}, '%')
+            </if>
+            <if test="formerNames != null and formerNames != ''">
+                AND s.曾用名 LIKE CONCAT('%', #{formerNames}, '%')
+            </if>
+            <if test="supplierCode != null and supplierCode != ''">
+                AND CAST(s.供应商编码 AS CHAR) LIKE CONCAT('%', #{supplierCode}, '%')
+            </if>
+            <if test="supplierStatus != null and supplierStatus != ''">
+                AND s.供应商状态 = #{supplierStatus}
+            </if>
+            <if test="accountName != null and accountName != ''">
+                AND s.账户名称 LIKE CONCAT('%', #{accountName}, '%')
+            </if>
+            <if test="accountNumber != null and accountNumber != ''">
+                AND s.账户号码 LIKE CONCAT('%', #{accountNumber}, '%')
+            </if>
+            <if test="bankName != null and bankName != ''">
+                AND s.开户银行 LIKE CONCAT('%', #{bankName}, '%')
+            </if>
+            <if test="creatorId != null">
+                AND s.创建人编码 = #{creatorId}
+            </if>
+        </where>
+        <if test="orderBy != null and orderBy != ''">
+            ORDER BY
+            <choose>
+                <when test="orderBy == 'supplierId'">
+                    s.供应商编码
+                </when>
+                <when test="orderBy == 'enterpriseName'">
+                    s.企业名称
+                </when>
+                <when test="orderBy == 'creditCode'">
+                    s.统一社会信用代码
+                </when>
+                <when test="orderBy == 'phone'">
+                    s.电话
+                </when>
+                <when test="orderBy == 'address'">
+                    s.地址
+                </when>
+                <when test="orderBy == 'legalRepresentative'">
+                    s.法定代表人
+                </when>
+                <when test="orderBy == 'contactPerson'">
+                    s.联系人
+                </when>
+                <when test="orderBy == 'contactPhone'">
+                    s.联系电话
+                </when>
+                <when test="orderBy == 'formerNames'">
+                    s.曾用名
+                </when>
+                <when test="orderBy == 'supplierStatus'">
+                    s.供应商状态
+                </when>
+                <when test="orderBy == 'ownerEmployeeId'">
+                    s.业务员编码
+                </when>
+                <when test="orderBy == 'accountName'">
+                    s.账户名称
+                </when>
+                <when test="orderBy == 'accountNumber'">
+                    s.账户号码
+                </when>
+                <when test="orderBy == 'bankName'">
+                    s.开户银行
+                </when>
+                <when test="orderBy == 'createTime'">
+                    s.创建时间
+                </when>
+                <when test="orderBy == 'updateTime'">
+                    s.更新时间
+                </when>
+                <otherwise>
+                    s.供应商编码
+                </otherwise>
+            </choose>
+            <if test="orderDirection != null and orderDirection != ''">
+                ${orderDirection}
+            </if>
+        </if>
+    </select>
+
+    <select id="selectSupplierList" resultMap="SupplierResultMap">
+        <include refid="BaseSelectSql"/>
+        <where>
+            <if test="enterpriseName != null and enterpriseName != ''">
+                AND s.企业名称 LIKE CONCAT('%', #{enterpriseName}, '%')
+            </if>
+            <if test="creditCode != null and creditCode != ''">
+                AND s.统一社会信用代码 LIKE CONCAT('%', #{creditCode}, '%')
+            </if>
+            <if test="ownerEmployeeId != null">
+                AND s.业务员编码 = #{ownerEmployeeId}
+            </if>
+            <if test="ownerEmployee != null and ownerEmployee != ''">
+                AND (owner.员工姓名 LIKE CONCAT('%', #{ownerEmployee}, '%')
+                     OR CAST(s.业务员编码 AS CHAR) LIKE CONCAT('%', #{ownerEmployee}, '%'))
+            </if>
+            <if test="contactPhone != null and contactPhone != ''">
+                AND s.联系电话 LIKE CONCAT('%', #{contactPhone}, '%')
+            </if>
+            <if test="phone != null and phone != ''">
+                AND s.电话 LIKE CONCAT('%', #{phone}, '%')
+            </if>
+            <if test="contactPerson != null and contactPerson != ''">
+                AND s.联系人 LIKE CONCAT('%', #{contactPerson}, '%')
+            </if>
+            <if test="address != null and address != ''">
+                AND s.地址 LIKE CONCAT('%', #{address}, '%')
+            </if>
+            <if test="legalRepresentative != null and legalRepresentative != ''">
+                AND s.法定代表人 LIKE CONCAT('%', #{legalRepresentative}, '%')
+            </if>
+            <if test="formerNames != null and formerNames != ''">
+                AND s.曾用名 LIKE CONCAT('%', #{formerNames}, '%')
+            </if>
+            <if test="supplierCode != null and supplierCode != ''">
+                AND CAST(s.供应商编码 AS CHAR) LIKE CONCAT('%', #{supplierCode}, '%')
+            </if>
+            <if test="supplierStatus != null and supplierStatus != ''">
+                AND s.供应商状态 = #{supplierStatus}
+            </if>
+            <if test="accountName != null and accountName != ''">
+                AND s.账户名称 LIKE CONCAT('%', #{accountName}, '%')
+            </if>
+            <if test="accountNumber != null and accountNumber != ''">
+                AND s.账户号码 LIKE CONCAT('%', #{accountNumber}, '%')
+            </if>
+            <if test="bankName != null and bankName != ''">
+                AND s.开户银行 LIKE CONCAT('%', #{bankName}, '%')
+            </if>
+            <!-- viewScope=SELF 时，仅导出当前用户创建的供应商 -->
+            <if test="creatorId != null">
+                AND s.创建人编码 = #{creatorId}
+            </if>
+        </where>
+        <if test="orderBy != null and orderBy != ''">
+            ORDER BY
+            <choose>
+                <when test="orderBy == 'supplierId'">
+                    s.供应商编码
+                </when>
+                <when test="orderBy == 'enterpriseName'">
+                    s.企业名称
+                </when>
+                <when test="orderBy == 'creditCode'">
+                    s.统一社会信用代码
+                </when>
+                <when test="orderBy == 'phone'">
+                    s.电话
+                </when>
+                <when test="orderBy == 'address'">
+                    s.地址
+                </when>
+                <when test="orderBy == 'legalRepresentative'">
+                    s.法定代表人
+                </when>
+                <when test="orderBy == 'contactPerson'">
+                    s.联系人
+                </when>
+                <when test="orderBy == 'contactPhone'">
+                    s.联系电话
+                </when>
+                <when test="orderBy == 'formerNames'">
+                    s.曾用名
+                </when>
+                <when test="orderBy == 'supplierStatus'">
+                    s.供应商状态
+                </when>
+                <when test="orderBy == 'ownerEmployeeId'">
+                    s.业务员编码
+                </when>
+                <when test="orderBy == 'accountName'">
+                    s.账户名称
+                </when>
+                <when test="orderBy == 'accountNumber'">
+                    s.账户号码
+                </when>
+                <when test="orderBy == 'bankName'">
+                    s.开户银行
+                </when>
+                <when test="orderBy == 'createTime'">
+                    s.创建时间
+                </when>
+                <when test="orderBy == 'updateTime'">
+                    s.更新时间
+                </when>
+                <otherwise>
+                    s.供应商编码
+                </otherwise>
+            </choose>
+            <if test="orderDirection != null and orderDirection != ''">
+                ${orderDirection}
+            </if>
+        </if>
+    </select>
+
+    <select id="selectDetailById" resultMap="SupplierResultMap">
+        <include refid="BaseSelectSql"/>
+        WHERE s.供应商编码 = #{supplierId}
+    </select>
+
+    <insert id="insertBatch">
+        INSERT INTO SUPPLIER (
+            企业名称,
+            统一社会信用代码,
+            地址,
+            电话,
+            法定代表人,
+            联系人,
+            联系电话,
+            曾用名,
+            供应商状态,
+            业务员编码,
+            创建人编码,
+            备注,
+            创建时间,
+            更新时间,
+            账户名称,
+            账户号码,
+            开户银行
+        ) VALUES
+        <foreach collection="suppliers" item="supplier" separator=",">
+            (
+                #{supplier.enterpriseName},
+                #{supplier.creditCode},
+                #{supplier.address},
+                #{supplier.phone},
+                #{supplier.legalRepresentative},
+                #{supplier.contactPerson},
+                #{supplier.contactPhone},
+                #{supplier.formerNames},
+                #{supplier.supplierStatus},
+                #{supplier.ownerEmployeeId},
+                #{supplier.creatorId},
+                #{supplier.remark},
+                #{supplier.createTime},
+                #{supplier.updateTime},
+                #{supplier.accountName},
+                #{supplier.accountNumber},
+                #{supplier.bankName}
+            )
+        </foreach>
+    </insert>
+
+    <select id="selectExistingCreditCodes" resultType="string">
+        SELECT DISTINCT 统一社会信用代码
+        FROM SUPPLIER
+        WHERE 统一社会信用代码 IN
+        <foreach collection="creditCodes" item="code" open="(" close=")" separator=",">
+            #{code}
+        </foreach>
+    </select>
+
+    <update id="updateBatchStatus">
+        UPDATE SUPPLIER
+        SET 供应商状态 = #{supplierStatus}, 更新时间 = NOW()
+        WHERE 供应商编码 IN
+        <foreach collection="supplierIds" item="id" open="(" close=")" separator=",">
+            #{id}
+        </foreach>
+    </update>
+
+    <select id="selectSupplierStatistics" resultType="com.erp.mapper.customer.SupplierStatistics">
+        SELECT
+            COUNT(*) as totalCount,
+            SUM(CASE WHEN 供应商状态 = '正常' THEN 1 ELSE 0 END) as activeCount,
+            COUNT(*) - SUM(CASE WHEN 供应商状态 = '正常' THEN 1 ELSE 0 END) as inactiveCount
+        FROM SUPPLIER
+    </select>
+
+    <select id="selectByEnterpriseName" resultMap="SupplierResultMap">
+        <include refid="BaseSelectSql"/>
+        WHERE s.企业名称 LIKE CONCAT('%', #{enterpriseName}, '%')
+        ORDER BY s.企业名称
+    </select>
+
+</mapper>

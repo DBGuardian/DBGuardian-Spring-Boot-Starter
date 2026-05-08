@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.erp.mapper.transport.OutsourceTransportSettlementSlipMapper">
+
+    <!-- 根据结算单编号查询关联的总磅单列表 -->
+    <select id="selectBySettlementId" resultType="com.erp.entity.transport.OutsourceTransportSettlementSlip">
+        SELECT * FROM OTS_SLIP_RELATION
+        WHERE 结算单编号 = #{settlementId}
+        ORDER BY 创建时间 DESC
+    </select>
+
+    <!-- 根据总磅单编号查询关联的结算单信息 -->
+    <select id="selectBySlipId" resultType="com.erp.entity.transport.OutsourceTransportSettlementSlip">
+        SELECT * FROM OTS_SLIP_RELATION
+        WHERE 总磅单编号 = #{slipId}
+        LIMIT 1
+    </select>
+
+    <!-- 批量插入关联记录 -->
+    <insert id="batchInsert" parameterType="java.util.List">
+        INSERT INTO OTS_SLIP_RELATION (结算单编号, 结算单单号, 总磅单编号, 总磅单单号, 创建时间, version)
+        VALUES
+        <foreach collection="slips" item="item" separator=",">
+            (#{item.settlementId}, #{item.settlementNo}, #{item.slipId}, #{item.slipCode}, NOW(), 0)
+        </foreach>
+    </insert>
+
+    <!-- 删除结算单关联的总磅单记录 -->
+    <delete id="deleteBySettlementId">
+        DELETE FROM OTS_SLIP_RELATION
+        WHERE 结算单编号 = #{settlementId}
+    </delete>
+
+    <!-- 批量删除结算单关联的总磅单记录 -->
+    <delete id="deleteBySettlementIds">
+        DELETE FROM OTS_SLIP_RELATION
+        WHERE 结算单编号 IN
+        <foreach collection="settlementIds" item="item" open="(" separator="," close=")">
+            #{item}
+        </foreach>
+    </delete>
+
+    <!-- 统计结算单关联的总磅单数量 -->
+    <select id="countBySettlementId" resultType="java.lang.Long">
+        SELECT COUNT(1) FROM OTS_SLIP_RELATION
+        WHERE 结算单编号 = #{settlementId}
+    </select>
+
+    <!-- 查询总磅单ID列表（用于嵌套SELECT） -->
+    <select id="selectSlipIdsBySettlementId" resultType="java.lang.Integer">
+        SELECT 总磅单编号 FROM OTS_SLIP_RELATION
+        WHERE 结算单编号 = #{settlementId}
+        ORDER BY 创建时间 DESC
+    </select>
+
+    <!-- 查询总磅单VO列表（用于嵌套SELECT） -->
+    <select id="selectBySettlementIdForDetail" resultType="com.erp.controller.transport.dto.OutsourceTransportSettlementSlipVO">
+        SELECT
+            关联编号 AS relationId,
+            结算单编号 AS settlementId,
+            结算单单号 AS settlementNo,
+            总磅单编号 AS slipId,
+            总磅单单号 AS slipCode,
+            创建时间 AS createTime
+        FROM OTS_SLIP_RELATION
+        WHERE 结算单编号 = #{settlementId}
+        ORDER BY 创建时间 DESC
+    </select>
+
+</mapper>
