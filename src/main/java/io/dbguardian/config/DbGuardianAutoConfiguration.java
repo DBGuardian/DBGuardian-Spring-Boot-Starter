@@ -7,42 +7,61 @@ import io.dbguardian.coordination.DatasourceStatusListener;
 import io.dbguardian.enums.DataSourceStatus;
 import io.dbguardian.enums.DataSourceType;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
+import org.springframework.boot.autoconfigure.AutoConfigureOrder;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import org.springframework.context.event.EventListener;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.annotation.Scheduled;
 
+import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * DBGuardian 自动配置类
  *
  * 职责：负责读写分离数据源配置，同时也提供 MyBatis 兼容的数据源 Bean
  * 组件内部排除 Spring Boot 默认数据源自动配置
+ *
+ * 支持功能：
+ * - 读写分离（主库写，从库读）
+ * - 主从故障转移（从库升主库）
+ * - 分布式协调（基于 Redis）
+ * - 健康检查与自动恢复
  */
 @Configuration
+@AutoConfigureOrder(Integer.MIN_VALUE)
 @EnableConfigurationProperties(DataSourceProperties.class)
-@AutoConfigureBefore(name = "com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration")
+@EnableScheduling
+@Slf4j
+@AutoConfigureBefore(name = {"com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration", "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration"})
 public class DbGuardianAutoConfiguration {
 
-    private static final Logger log = LoggerFactory.getLogger(DbGuardianAutoConfiguration.class);
-
-    // ==================== 数据源配置属性 ====================
+    // ==================== 配置属性 ====================
 
     @Value("${spring.datasource.master.url}")
     private String masterUrl;
@@ -80,22 +99,49 @@ public class DbGuardianAutoConfiguration {
     @Value("${spring.datasource.slave.hikari.minimum-idle:5}")
     private int slaveMinIdle;
 
-    // ==================== 数据源 Bean 定义 ====================
+    @Value("${spring.datasource.replication.master-user:repl}")
+    private String replicationMasterUser;
 
-    /**
-     * 主数据源（写操作使用）
-     */
-    @Bean("dbguardianMasterDataSource")
-    public DataSource masterDataSource() {
-        return createDataSource(masterUrl, masterUsername, masterPassword, driverClassName, masterPoolSize, masterMinIdle, "dbguardian-master-pool");
+    @Value("${spring.datasource.replication.master-password:}")
+    private String replicationMasterPassword;
+
+    @Value("${spring.datasource.allow-degraded-startup:true}")
+    private boolean allowDegradedStartup;
+
+    // ==================== 运行时状态 ====================
+
+    private HikariDataSource masterDataSourceBean;
+    private HikariDataSource slaveDataSourceBean;
+    private volatile String currentNewMasterHost;
+    private volatile boolean initializationComplete = false;
+    private final AtomicBoolean recoveryInProgress = new AtomicBoolean(false);
+    private final AtomicReference<DataSourceStatus> currentStatus = new AtomicReference<>(DataSourceStatus.MASTER_ACTIVE);
+    private final AtomicBoolean masterFailed = new AtomicBoolean(false);
+    private final AtomicBoolean slaveFailed = new AtomicBoolean(false);
+    private final ExecutorService executorService = Executors.newCachedThreadPool();
+
+    /** 数据源协调服务 */
+    private DatasourceCoordinationService coordinationService;
+
+    @Autowired(required = false)
+    public void setCoordinationService(DatasourceCoordinationService coordinationService) {
+        this.coordinationService = coordinationService;
     }
 
-    /**
-     * 从数据源（读操作使用）
-     */
+    // ==================== Bean 定义 ====================
+
+    @Bean("dbguardianMasterDataSource")
+    public DataSource masterDataSource() {
+        HikariDataSource ds = createDataSource(masterUrl, masterUsername, masterPassword, driverClassName, masterPoolSize, masterMinIdle, "dbguardian-master-pool");
+        masterDataSourceBean = ds;
+        return ds;
+    }
+
     @Bean("dbguardianSlaveDataSource")
     public DataSource slaveDataSource() {
-        return createDataSource(slaveUrl, slaveUsername, slavePassword, slaveDriverClassName, slavePoolSize, slaveMinIdle, "dbguardian-slave-pool");
+        HikariDataSource ds = createDataSource(slaveUrl, slaveUsername, slavePassword, slaveDriverClassName, slavePoolSize, slaveMinIdle, "dbguardian-slave-pool");
+        slaveDataSourceBean = ds;
+        return ds;
     }
 
     private HikariDataSource createDataSource(String url, String username, String password, String driverClassName, int poolSize, int minIdle, String poolName) {
@@ -115,10 +161,6 @@ public class DbGuardianAutoConfiguration {
         return dataSource;
     }
 
-    /**
-     * 动态数据源（根据上下文切换主从）
-     * Bean 名称使用 "dataSource"，与 MyBatis 自动配置兼容
-     */
     @Bean("dataSource")
     @Primary
     public DataSource routingDataSource(
@@ -136,90 +178,388 @@ public class DbGuardianAutoConfiguration {
         return routingDataSource;
     }
 
-    // ==================== 其他 Bean 定义 ====================
-
-    /**
-     * 数据源协调服务（用于多实例分布式部署）
-     */
     @Bean
     @ConditionalOnMissingBean
     public DatasourceCoordinationService datasourceCoordinationService(
             @Autowired(required = false) RedisTemplate<String, Object> redisTemplate,
             @Value("${spring.application.name:dbguardian}") String applicationName) {
-
         DatasourceCoordinationService service = new DatasourceCoordinationService();
         service.setRedisTemplate(redisTemplate);
         service.setApplicationName(applicationName);
         return service;
     }
 
-    /**
-     * 读写分离切面
-     */
     @Bean
     @ConditionalOnMissingBean
     public DbGuardianDataSourceAspect dbGuardianDataSourceAspect() {
         return new DbGuardianDataSourceAspect();
     }
 
-    /**
-     * 状态监听器（仅当协调服务存在时）
-     */
     @Bean
     @ConditionalOnMissingBean
     public DatasourceStatusListener datasourceStatusListener() {
         return new DatasourceStatusListener();
     }
 
-    // ==================== 内部类 ====================
+    // ==================== 初始化与健康检查 ====================
 
-    /**
-     * 数据源上下文持有者
-     */
-    public static class DataSourceContextHolder {
-        private static final ThreadLocal<DataSourceType> CONTEXT = new ThreadLocal<>();
+    @PostConstruct
+    public void init() {
+        log.info("=== DBGuardian 读写分离配置初始化 ===");
 
-        public static void set(DataSourceType type) {
-            CONTEXT.set(type);
+        boolean masterOk = checkMasterHealth();
+        boolean slaveOk = checkSlaveHealth();
+
+        if (masterOk || slaveOk) {
+            log.info("数据源连接正常");
+            currentStatus.set(DataSourceStatus.MASTER_ACTIVE);
+            if (masterOk) {
+                disableReadOnlyOnDataSource(masterDataSourceBean);
+            }
+        } else if (allowDegradedStartup) {
+            log.warn("主库和从库都不可用，但允许降级启动（仅使用主库配置）");
+            currentStatus.set(DataSourceStatus.DEGRADED);
+        } else {
+            throw new RuntimeException("主库和从库都不可用，无法启动");
         }
 
-        public static DataSourceType get() {
-            return CONTEXT.get();
+        log.info("=== 初始数据源状态: {}, 主库: {}, 从库: {} ===",
+                 currentStatus.get(), masterOk ? "可用" : "不可用", slaveOk ? "可用" : "不可用");
+        initializationComplete = true;
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void onApplicationReady() {
+        log.info("=== 应用启动完成，重新检测数据源状态 ===");
+
+        boolean masterOk = checkMasterHealth();
+        boolean slaveOk = checkSlaveHealth();
+
+        if (masterOk && slaveOk) {
+            currentStatus.set(DataSourceStatus.MASTER_ACTIVE);
+            determineAndConfigureMasterSlave();
+            log.info("数据源状态已恢复正常: MASTER_ACTIVE（两个数据源都可用）");
+        } else if (masterOk) {
+            currentStatus.set(DataSourceStatus.MASTER_ACTIVE);
+            log.info("数据源状态已恢复正常: MASTER_ACTIVE（只有主库可用）");
+        } else if (slaveOk) {
+            currentStatus.set(DataSourceStatus.SLAVE_PROMOTED);
+            currentNewMasterHost = slaveUrl;
+            log.warn("数据源状态已恢复: SLAVE_PROMOTED（从库升为主库）");
+        } else {
+            log.warn("数据源仍然不可用，保持 DEGRADED 模式");
         }
 
-        public static void clear() {
-            CONTEXT.remove();
-        }
+        log.info("=== 最终数据源状态: {}, 主库: {}, 从库: {} ===",
+                 currentStatus.get(), masterOk ? "可用" : "不可用", slaveOk ? "可用" : "不可用");
 
-        public static void useMaster() {
-            set(DataSourceType.MASTER);
-        }
+        initializeRedisCoordination();
+    }
 
-        public static void useSlave() {
-            set(DataSourceType.SLAVE);
+    private void initializeRedisCoordination() {
+        if (coordinationService != null && coordinationService.isHealthy()) {
+            coordinationService.initialize();
+            syncStatusToRedis();
+            log.info("Redis 分布式协调服务已启用");
+        } else {
+            log.warn("Redis 协调服务不可用，将使用单机模式");
         }
     }
 
-    /**
-     * 动态路由数据源
-     */
+    private void syncStatusToRedis() {
+        if (coordinationService == null || !coordinationService.isHealthy()) {
+            return;
+        }
+        try {
+            coordinationService.registerAsMaster(coordinationService.getInstanceId());
+            String status = currentStatus.get() == DataSourceStatus.SLAVE_PROMOTED
+                    ? DatasourceCoordinationService.STATUS_SLAVE_PROMOTED
+                    : DatasourceCoordinationService.STATUS_NORMAL;
+            coordinationService.setMasterStatus(status);
+            log.info("状态已同步到 Redis: {}", status);
+        } catch (Exception e) {
+            log.error("同步状态到 Redis 失败: {}", e.getMessage());
+        }
+    }
+
+    @Scheduled(fixedRate = 30000)
+    public void healthCheck() {
+        if (!initializationComplete) return;
+        checkMasterHealth();
+        checkSlaveHealth();
+        handleFailover();
+    }
+
+    private boolean checkMasterHealth() {
+        if (masterDataSourceBean == null) return false;
+        try (Connection conn = masterDataSourceBean.getConnection()) {
+            if (conn.isValid(5)) {
+                if (masterFailed.get()) {
+                    log.info("主库恢复正常");
+                    masterFailed.set(false);
+                }
+                return true;
+            }
+        } catch (SQLException e) {
+            log.error("主库连接失败: {}", e.getMessage());
+        }
+        masterFailed.set(true);
+        return false;
+    }
+
+    private boolean checkSlaveHealth() {
+        if (slaveDataSourceBean == null) return false;
+        try (Connection conn = slaveDataSourceBean.getConnection()) {
+            if (conn.isValid(5)) {
+                if (slaveFailed.get()) {
+                    log.info("从库恢复正常");
+                    slaveFailed.set(false);
+                }
+                return true;
+            }
+        } catch (SQLException e) {
+            log.error("从库连接失败: {}", e.getMessage());
+        }
+        slaveFailed.set(true);
+        return false;
+    }
+
+    private void handleFailover() {
+        if (currentStatus.get() == DataSourceStatus.DEGRADED) return;
+
+        DataSourceStatus oldStatus = currentStatus.get();
+        if (oldStatus == DataSourceStatus.MASTER_ACTIVE) {
+            if (masterFailed.get() && !slaveFailed.get()) {
+                log.warn("主库故障，从库将升为主库");
+                autoPromoteSlaveToMaster();
+            }
+        } else if (oldStatus == DataSourceStatus.SLAVE_PROMOTED) {
+            if (!masterFailed.get() && !recoveryInProgress.get()) {
+                log.info("原主库已恢复，开始恢复流程...");
+                recoverOriginalMaster();
+            }
+        }
+    }
+
+    private void autoPromoteSlaveToMaster() {
+        try {
+            currentNewMasterHost = slaveUrl;
+            disableSlaveReadOnly();
+            currentStatus.set(DataSourceStatus.SLAVE_PROMOTED);
+            DataSourceContextHolder.useMaster();
+            syncStatusToRedis();
+            log.info("故障转移完成：从库已升为主库");
+        } catch (Exception e) {
+            log.error("故障转移失败: {}", e.getMessage());
+        }
+    }
+
+    private void disableSlaveReadOnly() {
+        try (Connection conn = slaveDataSourceBean.getConnection(); Statement stmt = conn.createStatement()) {
+            try {
+                stmt.execute("STOP SLAVE");
+                stmt.execute("RESET SLAVE ALL");
+            } catch (SQLException e) {
+                log.debug("停止主从复制失败: {}", e.getMessage());
+            }
+            stmt.execute("SET GLOBAL READ_ONLY=OFF");
+            stmt.execute("SET GLOBAL SUPER_READ_ONLY=OFF");
+            log.info("从库只读模式已关闭");
+        } catch (SQLException e) {
+            log.warn("关闭从库只读模式失败: {}", e.getMessage());
+        }
+    }
+
+    private void recoverOriginalMaster() {
+        if (!recoveryInProgress.compareAndSet(false, true)) return;
+        try {
+            log.info("=== 开始恢复原主库 ===");
+            recoverMasterAsSlave();
+            log.info("=== 原主库恢复完成 ===");
+        } catch (Exception e) {
+            log.error("原主库恢复失败: {}", e.getMessage());
+        } finally {
+            recoveryInProgress.set(false);
+        }
+    }
+
+    private void recoverMasterAsSlave() {
+        if (currentNewMasterHost == null) {
+            log.error("新主库地址为空，无法恢复原主库");
+            return;
+        }
+        if (replicationMasterUser == null || replicationMasterUser.isEmpty() ||
+            replicationMasterPassword == null || replicationMasterPassword.isEmpty()) {
+            log.info("未配置复制用户，跳过自动恢复配置");
+            return;
+        }
+        try (Connection masterConn = masterDataSourceBean.getConnection(); Statement stmt = masterConn.createStatement()) {
+            try {
+                stmt.execute("STOP SLAVE");
+                stmt.execute("RESET SLAVE ALL");
+            } catch (SQLException ignored) {}
+
+            String newMasterHost = extractHost(currentNewMasterHost);
+            int newMasterPort = extractPort(currentNewMasterHost);
+
+            String sql = String.format(
+                "CHANGE MASTER TO MASTER_HOST='%s', MASTER_PORT=%d, MASTER_USER='%s', MASTER_PASSWORD='%s', MASTER_AUTO_POSITION=1",
+                newMasterHost, newMasterPort, replicationMasterUser, replicationMasterPassword);
+            stmt.execute(sql);
+            stmt.execute("START SLAVE");
+            log.info("已配置原主库连接到新主库: {}:{}", newMasterHost, newMasterPort);
+        } catch (SQLException e) {
+            log.error("配置原主库为主从复制失败: {}", e.getMessage());
+        }
+    }
+
+    // ==================== 主从判断与配置 ====================
+
+    private void determineAndConfigureMasterSlave() {
+        try {
+            String masterGtid = getGtidPosition(masterDataSourceBean);
+            String slaveGtid = getGtidPosition(slaveDataSourceBean);
+
+            log.info("主库 GTID: {}", masterGtid);
+            log.info("从库 GTID: {}", slaveGtid);
+
+            boolean masterNewer = isNewerThan(masterGtid, slaveGtid);
+
+            if (masterNewer) {
+                log.info("主库数据更新，以主库为主库");
+                disableReadOnlyOnDataSource(masterDataSourceBean);
+                configureSlaveReplication(masterDataSourceBean, slaveDataSourceBean,
+                    extractHost(masterUrl), extractPort(masterUrl));
+            } else {
+                log.info("从库数据更新，以从库为主库");
+                disableReadOnlyOnDataSource(slaveDataSourceBean);
+                configureSlaveReplication(slaveDataSourceBean, masterDataSourceBean,
+                    extractHost(slaveUrl), extractPort(slaveUrl));
+
+                HikariDataSource temp = masterDataSourceBean;
+                masterDataSourceBean = slaveDataSourceBean;
+                slaveDataSourceBean = temp;
+                currentNewMasterHost = slaveUrl;
+                currentStatus.set(DataSourceStatus.SLAVE_PROMOTED);
+            }
+        } catch (Exception e) {
+            log.error("自动判断主从失败: {}", e.getMessage());
+            currentStatus.set(DataSourceStatus.MASTER_ACTIVE);
+        }
+    }
+
+    private void disableReadOnlyOnDataSource(DataSource ds) {
+        if (ds == null) return;
+        try (Connection conn = ds.getConnection(); Statement stmt = conn.createStatement()) {
+            stmt.execute("SET GLOBAL READ_ONLY=OFF");
+            stmt.execute("SET GLOBAL SUPER_READ_ONLY=OFF");
+            log.info("已关闭数据源只读模式");
+        } catch (SQLException e) {
+            log.debug("关闭只读模式失败: {}", e.getMessage());
+        }
+    }
+
+    private String getGtidPosition(DataSource ds) {
+        try (Connection conn = ds.getConnection(); Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SHOW MASTER STATUS")) {
+            if (rs.next()) {
+                return rs.getString("Executed_Gtid_Set");
+            }
+        } catch (SQLException e) {
+            log.debug("获取 GTID 失败: {}", e.getMessage());
+        }
+        return "";
+    }
+
+    private boolean isNewerThan(String gtid1, String gtid2) {
+        if (gtid1 == null || gtid1.isEmpty()) return false;
+        if (gtid2 == null || gtid2.isEmpty()) return true;
+        try {
+            Set<String> set1 = new java.util.HashSet<>(Arrays.asList(gtid1.split(",")));
+            Set<String> set2 = new java.util.HashSet<>(Arrays.asList(gtid2.split(",")));
+            Set<String> all = new java.util.HashSet<>(set1);
+            all.addAll(set2);
+            int count1 = 0, count2 = 0;
+            for (String gtid : all) {
+                if (set1.contains(gtid)) count1++;
+                if (set2.contains(gtid)) count2++;
+            }
+            return count1 >= count2;
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    private void configureSlaveReplication(DataSource masterDs, DataSource slaveDs, String masterHost, int masterPort) {
+        if (replicationMasterUser == null || replicationMasterUser.isEmpty() ||
+            replicationMasterPassword == null || replicationMasterPassword.isEmpty()) {
+            log.info("未配置复制用户，跳过主从复制配置");
+            return;
+        }
+        try (Connection slaveConn = slaveDs.getConnection(); Statement stmt = slaveConn.createStatement()) {
+            disableReadOnlyOnDataSource(masterDs);
+            try {
+                stmt.execute("STOP SLAVE");
+                stmt.execute("RESET SLAVE ALL");
+            } catch (SQLException ignored) {}
+
+            String sql = String.format(
+                "CHANGE MASTER TO MASTER_HOST='%s', MASTER_PORT=%d, MASTER_USER='%s', MASTER_PASSWORD='%s', MASTER_AUTO_POSITION=1",
+                masterHost, masterPort, replicationMasterUser, replicationMasterPassword);
+            stmt.execute(sql);
+            stmt.execute("START SLAVE");
+            log.info("已配置从库复制主库: {}:{}", masterHost, masterPort);
+        } catch (SQLException e) {
+            log.error("配置主从复制失败: {}", e.getMessage());
+        }
+    }
+
+    private String extractHost(String jdbcUrl) {
+        if (jdbcUrl == null) return null;
+        int start = jdbcUrl.indexOf("://") + 3;
+        int end = jdbcUrl.indexOf(":", start);
+        if (end == -1) end = jdbcUrl.indexOf("/", start);
+        return jdbcUrl.substring(start, end);
+    }
+
+    private int extractPort(String jdbcUrl) {
+        if (jdbcUrl == null) return 3306;
+        int start = jdbcUrl.indexOf("://") + 3;
+        start = jdbcUrl.indexOf(":", start) + 1;
+        int end = jdbcUrl.indexOf("/", start);
+        return Integer.parseInt(jdbcUrl.substring(start, end));
+    }
+
+    // ==================== 内部类 ====================
+
+    public static class DataSourceContextHolder {
+        private static final ThreadLocal<DataSourceType> CONTEXT = new ThreadLocal<>();
+
+        public static void set(DataSourceType type) { CONTEXT.set(type); }
+        public static DataSourceType get() { return CONTEXT.get(); }
+        public static void clear() { CONTEXT.remove(); }
+        public static void useMaster() { set(DataSourceType.MASTER); }
+        public static void useSlave() { set(DataSourceType.SLAVE); }
+    }
+
     public static class RoutingDataSource extends AbstractRoutingDataSource {
         @Override
         protected Object determineCurrentLookupKey() {
             DataSourceType type = DataSourceContextHolder.get();
-            if (type == null) {
-                return DataSourceType.MASTER;
-            }
-            return type;
+            return type == null ? DataSourceType.MASTER : type;
         }
     }
 
-    // ==================== 公开方法（供 AOP 切面使用） ====================
+    @PreDestroy
+    public void destroy() {
+        if (executorService != null) executorService.shutdown();
+        if (masterDataSourceBean != null && !masterDataSourceBean.isClosed()) masterDataSourceBean.close();
+        if (slaveDataSourceBean != null && !slaveDataSourceBean.isClosed()) slaveDataSourceBean.close();
+    }
 
-    /**
-     * 获取当前数据源状态（兼容旧接口）
-     */
+    // ==================== 公开方法 ====================
+
     public DataSourceStatus getCurrentStatus() {
-        return DataSourceStatus.MASTER_ACTIVE;
+        return currentStatus.get();
     }
 }

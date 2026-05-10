@@ -10,11 +10,9 @@ spring:
   application:
     name: business-workflow-erp
 
-  # 由 DBGuardian 组件接管数据源配置，排除 Spring 默认数据源自动配置
-  autoconfigure:
-    exclude:
-      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
-      - org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration
+  # 允许循环依赖（DBGuardian 与 MyBatis-Plus 的数据源配置循环）
+  main:
+    allow-circular-references: true
 
   # MVC配置（解决Knife4j兼容性问题）
   mvc:
