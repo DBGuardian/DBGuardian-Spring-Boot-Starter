@@ -10,12 +10,12 @@ spring:
   application:
     name: business-workflow-erp
 
-  # 排除 Spring Boot 默认数据源自动配置
+  # 由 DBGuardian 组件接管数据源配置，排除 Spring 默认数据源自动配置
   autoconfigure:
     exclude:
       - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
       - org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration
-  
+
   # MVC配置（解决Knife4j兼容性问题）
   mvc:
     pathmatch:
@@ -118,8 +118,8 @@ mybatis-plus:
       logic-delete-field: deleted
       logic-delete-value: 1
       logic-not-delete-value: 0
-  mapper-locations: classpath:mapper/**/*.xml
-  type-aliases-package: com.erp.entity
+  mapper-locations: classpath*:**/mapper/**/*.xml
+  type-aliases-package: com.erp.entity  # 各项目按需配置
 
 # JWT配置
 jwt:

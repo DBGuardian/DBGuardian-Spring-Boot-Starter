@@ -1,6 +1,6 @@
 package io.dbguardian.aspect;
 
-import io.dbguardian.config.DbGuardianDataSourceConfig;
+import io.dbguardian.config.DbGuardianAutoConfiguration;
 import io.dbguardian.enums.DataSourceStatus;
 import io.dbguardian.enums.DataSourceType;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -21,7 +21,7 @@ import org.springframework.stereotype.Component;
 public class DbGuardianDataSourceAspect {
 
     @Autowired
-    private DbGuardianDataSourceConfig dataSourceConfig;
+    private DbGuardianAutoConfiguration dataSourceConfig;
 
     /**
      * 定义切点：MyBatis-Plus BaseMapper 的所有方法
@@ -42,16 +42,16 @@ public class DbGuardianDataSourceAspect {
             DataSourceStatus status = dataSourceConfig.getCurrentStatus();
 
             if (status == DataSourceStatus.SLAVE_PROMOTED) {
-                DbGuardianDataSourceConfig.DataSourceContextHolder.useMaster();
+                DbGuardianAutoConfiguration.DataSourceContextHolder.useMaster();
             } else if (isReadMethod(methodName)) {
-                DbGuardianDataSourceConfig.DataSourceContextHolder.useSlave();
+                DbGuardianAutoConfiguration.DataSourceContextHolder.useSlave();
             } else {
-                DbGuardianDataSourceConfig.DataSourceContextHolder.useMaster();
+                DbGuardianAutoConfiguration.DataSourceContextHolder.useMaster();
             }
 
             return joinPoint.proceed();
         } finally {
-            DbGuardianDataSourceConfig.DataSourceContextHolder.clear();
+            DbGuardianAutoConfiguration.DataSourceContextHolder.clear();
         }
     }
 
