@@ -287,6 +287,10 @@ public class DbGuardianAutoConfiguration {
         if (!initializationComplete) return;
         checkMasterHealth();
         checkSlaveHealth();
+        // 定期检查复制状态
+        if (slaveDataSourceBean != null) {
+            checkReplicationStatus(slaveDataSourceBean, "定期检查");
+        }
         handleFailover();
     }
 
@@ -408,6 +412,9 @@ public class DbGuardianAutoConfiguration {
             stmt.execute(sql);
             stmt.execute("START SLAVE");
             log.info("已配置原主库连接到新主库: {}:{}", newMasterHost, newMasterPort);
+
+            // 异步检查原主库恢复后的复制状态
+            checkReplicationStatusAsync(masterDataSourceBean, "原主库恢复");
         } catch (SQLException e) {
             log.error("配置原主库为主从复制失败: {}", e.getMessage());
         }
@@ -509,8 +516,50 @@ public class DbGuardianAutoConfiguration {
             stmt.execute(sql);
             stmt.execute("START SLAVE");
             log.info("已配置从库复制主库: {}:{}", masterHost, masterPort);
+
+            // 异步检查复制状态
+            checkReplicationStatusAsync(slaveDs, "主从复制");
         } catch (SQLException e) {
             log.error("配置主从复制失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 异步检查复制状态
+     * @param ds 数据源
+     * @param desc 描述（用于日志）
+     */
+    private void checkReplicationStatusAsync(DataSource ds, String desc) {
+        executorService.submit(() -> {
+            try {
+                Thread.sleep(2000);
+                checkReplicationStatus(ds, desc);
+            } catch (Exception e) {
+                log.debug("异步检查复制状态失败: {}", e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * 检查并打印复制状态
+     * @param ds 数据源
+     * @param desc 描述
+     */
+    private void checkReplicationStatus(DataSource ds, String desc) {
+        try (Connection conn = ds.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SHOW SLAVE STATUS")) {
+            if (rs.next()) {
+                String ioRunning = rs.getString("Slave_IO_Running");
+                String sqlRunning = rs.getString("Slave_SQL_Running");
+                String secondsBehind = rs.getString("Seconds_Behind_Master");
+                log.info("{} - IO: {}, SQL: {}", desc, ioRunning, sqlRunning);
+                if (secondsBehind != null && !secondsBehind.equals("0") && !secondsBehind.equals("NULL")) {
+                    log.info("{} - 复制延迟: {}秒", desc, secondsBehind);
+                }
+            }
+        } catch (SQLException e) {
+            log.debug("检查复制状态失败: {}", e.getMessage());
         }
     }
 
