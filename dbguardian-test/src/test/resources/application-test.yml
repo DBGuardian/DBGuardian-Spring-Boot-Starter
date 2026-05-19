@@ -5,7 +5,7 @@ spring:
   # 主库数据源配置（测试环境）
   datasource:
     master:
-      url: jdbc:mysql://192.168.3.45:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      url: jdbc:mysql://192.168.3.47:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
       username: root
       password: zhuzhou9uu897@
       driver-class-name: com.mysql.cj.jdbc.Driver
@@ -17,7 +17,7 @@ spring:
         max-lifetime: 600000
     # 从库数据源配置
     slave:
-      url: jdbc:mysql://192.168.3.46:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      url: jdbc:mysql://192.168.3.48:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
       username: root
       password: zhuzhou9uu897@
       driver-class-name: com.mysql.cj.jdbc.Driver
@@ -29,7 +29,7 @@ spring:
         max-lifetime: 600000
     # 主从复制配置
     replication:
-      master-host: 192.168.3.45
+      master-host: 192.168.3.47
       master-port: 3306
       master-user: repl
       master-password: zhuzhou9uu897@
@@ -39,7 +39,7 @@ spring:
 
   # Redis配置（测试环境）
   redis:
-    host: 192.168.3.45
+    host: 192.168.3.47
     port: 6379
     password: zhuzhou9uu897@
     database: 1
