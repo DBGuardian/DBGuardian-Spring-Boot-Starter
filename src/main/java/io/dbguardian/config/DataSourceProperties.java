@@ -6,8 +6,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 /**
  * DBGuardian 数据源配置属性
  * 对应 application.yml 中的 spring.datasource 配置
- * 
- * 基于 business-workflow-erp-java 项目的配置方式
  */
 @Data
 @ConfigurationProperties(prefix = "spring.datasource")

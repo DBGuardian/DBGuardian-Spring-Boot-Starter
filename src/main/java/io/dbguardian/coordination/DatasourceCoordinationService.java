@@ -11,9 +11,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * 数据源分布式协调服务
  * 使用 Redis 实现多个后端实例间的数据源状态同步
- * 
- * 基于 business-workflow-erp-java 项目的 DatasourceCoordinationService 实现
- * 
+ *
  * 注意：此类由 DbGuardianAutoConfiguration 的 @Bean 方法注册
  * 不要添加 @Service 或其他 @Component 注解，避免 Bean 重复定义
  */
