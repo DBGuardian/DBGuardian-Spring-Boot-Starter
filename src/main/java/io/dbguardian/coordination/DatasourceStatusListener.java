@@ -1,30 +1,39 @@
 package io.dbguardian.coordination;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
-import org.springframework.stereotype.Component;
-
-import javax.annotation.PostConstruct;
 
 /**
  * Redis 消息监听器
  * 监听数据源状态变更消息，实现多后端实例间的状态同步
+ * 
+ * 注意：此类由 DbGuardianAutoConfiguration 的 @Bean 方法注册
+ * 不要添加 @Component 或 @Service 注解
  */
 @Slf4j
-@Component
 public class DatasourceStatusListener implements MessageListener {
 
     private static final String STATUS_CHANNEL = "dbguardian:datasource:status:channel";
 
-    @Autowired(required = false)
     private RedisMessageListenerContainer container;
-
-    @Autowired(required = false)
     private DatasourceCoordinationService coordinationService;
+
+    /**
+     * 用于 Spring 注入 RedisMessageListenerContainer
+     */
+    public void setContainer(RedisMessageListenerContainer container) {
+        this.container = container;
+    }
+
+    /**
+     * 用于 Spring 注入 DatasourceCoordinationService
+     */
+    public void setCoordinationService(DatasourceCoordinationService coordinationService) {
+        this.coordinationService = coordinationService;
+    }
 
     /**
      * 订阅者注册标记（避免重复订阅）
@@ -32,17 +41,9 @@ public class DatasourceStatusListener implements MessageListener {
     private volatile boolean subscribed = false;
 
     /**
-     * 初始化订阅
-     */
-    @PostConstruct
-    public void init() {
-        subscribe();
-    }
-
-    /**
      * 订阅状态变更消息
      */
-    private void subscribe() {
+    public void subscribe() {
         if (subscribed) {
             return;
         }

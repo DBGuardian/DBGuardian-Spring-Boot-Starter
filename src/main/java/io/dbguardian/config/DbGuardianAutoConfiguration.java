@@ -16,11 +16,15 @@ import org.springframework.boot.autoconfigure.AutoConfigureOrder;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.event.EventListener;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -123,10 +127,8 @@ public class DbGuardianAutoConfiguration {
     /** 数据源协调服务 */
     private DatasourceCoordinationService coordinationService;
 
-    @Autowired(required = false)
-    public void setCoordinationService(DatasourceCoordinationService coordinationService) {
-        this.coordinationService = coordinationService;
-    }
+    @Autowired
+    private ApplicationContext applicationContext;
 
     // ==================== Bean 定义 ====================
 
@@ -184,9 +186,45 @@ public class DbGuardianAutoConfiguration {
             @Autowired(required = false) RedisTemplate<String, Object> redisTemplate,
             @Value("${spring.application.name:dbguardian}") String applicationName) {
         DatasourceCoordinationService service = new DatasourceCoordinationService();
-        service.setRedisTemplate(redisTemplate);
+        // 直接注入 redisTemplate
+        if (redisTemplate != null) {
+            service.setRedisTemplate(redisTemplate);
+        }
         service.setApplicationName(applicationName);
         return service;
+    }
+
+    /**
+     * Redis 消息监听容器
+     * 用于订阅数据源状态变更消息，实现多实例间的状态同步
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RedisMessageListenerContainer redisMessageListenerContainer(
+            @Autowired(required = false) RedisConnectionFactory redisConnectionFactory) {
+        RedisMessageListenerContainer container = new RedisMessageListenerContainer();
+        if (redisConnectionFactory != null) {
+            container.setConnectionFactory(redisConnectionFactory);
+            log.info("Redis 消息监听容器已初始化");
+        }
+        return container;
+    }
+
+    /**
+     * RedisTemplate Bean
+     * 用于 DatasourceCoordinationService 的 Redis 操作
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisTemplate.class)
+    public RedisTemplate<String, Object> redisTemplate(RedisConnectionFactory connectionFactory) {
+        RedisTemplate<String, Object> template = new RedisTemplate<>();
+        template.setConnectionFactory(connectionFactory);
+        template.setKeySerializer(new org.springframework.data.redis.serializer.StringRedisSerializer());
+        template.setValueSerializer(new org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer());
+        template.setHashKeySerializer(new org.springframework.data.redis.serializer.StringRedisSerializer());
+        template.setHashValueSerializer(new org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer());
+        template.afterPropertiesSet();
+        return template;
     }
 
     @Bean
@@ -197,8 +235,14 @@ public class DbGuardianAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public DatasourceStatusListener datasourceStatusListener() {
-        return new DatasourceStatusListener();
+    public DatasourceStatusListener datasourceStatusListener(
+            @Autowired(required = false) RedisMessageListenerContainer redisMessageListenerContainer,
+            @Autowired(required = false) DatasourceCoordinationService datasourceCoordinationService) {
+        DatasourceStatusListener listener = new DatasourceStatusListener();
+        listener.setContainer(redisMessageListenerContainer);
+        listener.setCoordinationService(datasourceCoordinationService);
+        listener.subscribe();
+        return listener;
     }
 
     // ==================== 初始化与健康检查 ====================
@@ -257,28 +301,34 @@ public class DbGuardianAutoConfiguration {
     }
 
     private void initializeRedisCoordination() {
-        if (coordinationService != null && coordinationService.isHealthy()) {
-            coordinationService.initialize();
-            syncStatusToRedis();
-            log.info("Redis 分布式协调服务已启用");
-        } else {
+        try {
+            DatasourceCoordinationService service = applicationContext.getBean(DatasourceCoordinationService.class);
+            if (service != null && service.isHealthy()) {
+                service.initialize();
+                syncStatusToRedis(service);
+                coordinationService = service;
+                log.info("Redis 分布式协调服务已启用");
+            } else {
+                log.warn("Redis 协调服务不可用，将使用单机模式");
+            }
+        } catch (Exception e) {
             log.warn("Redis 协调服务不可用，将使用单机模式");
         }
     }
 
-    private void syncStatusToRedis() {
-        if (coordinationService == null || !coordinationService.isHealthy()) {
+    private void syncStatusToRedis(DatasourceCoordinationService service) {
+        if (service == null || !service.isHealthy()) {
             return;
         }
         try {
-            coordinationService.registerAsMaster(coordinationService.getInstanceId());
+            service.registerAsMaster(service.getInstanceId());
             String status = currentStatus.get() == DataSourceStatus.SLAVE_PROMOTED
                     ? DatasourceCoordinationService.STATUS_SLAVE_PROMOTED
                     : DatasourceCoordinationService.STATUS_NORMAL;
-            coordinationService.setMasterStatus(status);
+            service.setMasterStatus(status);
             log.info("状态已同步到 Redis: {}", status);
         } catch (Exception e) {
-            log.error("同步状态到 Redis 失败: {}", e.getMessage());
+            log.warn("同步状态到 Redis 失败: {}", e.getMessage());
         }
     }
 
@@ -351,7 +401,7 @@ public class DbGuardianAutoConfiguration {
             disableSlaveReadOnly();
             currentStatus.set(DataSourceStatus.SLAVE_PROMOTED);
             DataSourceContextHolder.useMaster();
-            syncStatusToRedis();
+            syncStatusToRedis(coordinationService);
             log.info("故障转移完成：从库已升为主库");
         } catch (Exception e) {
             log.error("故障转移失败: {}", e.getMessage());

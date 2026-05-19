@@ -1,10 +1,9 @@
 package io.dbguardian.coordination;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.stereotype.Service;
 
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -14,9 +13,11 @@ import java.util.concurrent.TimeUnit;
  * 使用 Redis 实现多个后端实例间的数据源状态同步
  * 
  * 基于 business-workflow-erp-java 项目的 DatasourceCoordinationService 实现
+ * 
+ * 注意：此类由 DbGuardianAutoConfiguration 的 @Bean 方法注册
+ * 不要添加 @Service 或其他 @Component 注解，避免 Bean 重复定义
  */
 @Slf4j
-@Service
 public class DatasourceCoordinationService {
 
     private static final String MASTER_STATUS_KEY = "dbguardian:datasource:master:status";
@@ -27,7 +28,6 @@ public class DatasourceCoordinationService {
     public static final String STATUS_NORMAL = "NORMAL";
     public static final String STATUS_SLAVE_PROMOTED = "SLAVE_PROMOTED";
 
-    @Autowired(required = false)
     private RedisTemplate<String, Object> redisTemplate;
 
     private volatile boolean redisAvailable = true;
@@ -243,12 +243,13 @@ public class DatasourceCoordinationService {
             return false;
         }
         try {
-            redisTemplate.opsForValue().get("health-check");
-            redisAvailable = true;
-            return true;
+            String result = redisTemplate.execute((RedisConnection connection) -> {
+                return new String(connection.ping());
+            });
+            redisAvailable = "PONG".equals(result);
+            return redisAvailable;
         } catch (Exception e) {
             redisAvailable = false;
-            log.error("Redis健康检查失败: {}", e.getMessage());
             return false;
         }
     }

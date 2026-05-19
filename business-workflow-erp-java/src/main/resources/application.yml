@@ -116,7 +116,7 @@ mybatis-plus:
       logic-delete-field: deleted
       logic-delete-value: 1
       logic-not-delete-value: 0
-  mapper-locations: classpath*:**/mapper/**/*.xml
+  mapper-locations: classpath:mapper/**/*.xml
   type-aliases-package: com.erp.entity  # 各项目按需配置
 
 # JWT配置
