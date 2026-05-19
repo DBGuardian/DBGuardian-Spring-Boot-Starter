@@ -26,6 +26,7 @@ import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 
@@ -178,6 +179,15 @@ public class DbGuardianAutoConfiguration {
 
         log.info("DBGuardian 读写分离数据源已初始化");
         return routingDataSource;
+    }
+
+    /**
+     * 事务管理器 - 支持 @Transactional 注解
+     */
+    @Bean
+    @Primary
+    public DataSourceTransactionManager dataSourceTransactionManager(DataSource dataSource) {
+        return new DataSourceTransactionManager(dataSource);
     }
 
     @Bean
