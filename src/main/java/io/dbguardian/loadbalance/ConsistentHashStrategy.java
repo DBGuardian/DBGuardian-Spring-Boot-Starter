@@ -1,8 +1,8 @@
 package io.dbguardian.loadbalance;
 
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.NavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.stream.Collectors;
 
 /**
@@ -16,7 +16,7 @@ import java.util.stream.Collectors;
 public class ConsistentHashStrategy implements ReadLoadBalanceStrategy {
 
     private static final int VIRTUAL_NODES = 100;
-    private final Map<Long, DataSourceWrapper> ring = new ConcurrentHashMap<>();
+    private final NavigableMap<Long, DataSourceWrapper> ring = new ConcurrentSkipListMap<>();
     private volatile List<DataSourceWrapper> currentSlaves;
 
     @Override
@@ -94,15 +94,15 @@ public class ConsistentHashStrategy implements ReadLoadBalanceStrategy {
 
     /**
      * 计算哈希值
+     * 使用 String.hashCode() 的变体，确保正数结果
      */
     private long hash(String key) {
-        // 使用 FNV1a 哈希算法
-        long hash = 14695981039346656037L;
+        long h = 0;
         for (int i = 0; i < key.length(); i++) {
-            hash ^= key.charAt(i);
-            hash *= 1099511628211L;
+            h = 31 * h + key.charAt(i);
         }
-        return hash & 0xffffffffffffL;
+        // 确保返回正数
+        return h & 0x7fffffffffffffffL;
     }
 
     @Override

@@ -19,7 +19,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.event.EventListener;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
@@ -347,11 +346,38 @@ public class DbGuardianAutoConfiguration {
         if (!initializationComplete) return;
         checkMasterHealth();
         checkSlaveHealth();
+
         // 定期检查复制状态
         if (slaveDataSourceBean != null) {
             checkReplicationStatus(slaveDataSourceBean, "定期检查");
         }
+
+        // 定期检测 GTID 一致性，防止从库被误写入
+        checkGtidConsistency();
+
         handleFailover();
+    }
+
+    /**
+     * 定期检测主从 GTID 一致性
+     * 如果检测到从库有额外数据，立即触发数据一致性保护机制
+     */
+    private void checkGtidConsistency() {
+        // 恢复过程中跳过检测，避免干扰恢复流程
+        if (recoveryInProgress.get()) {
+            return;
+        }
+        try {
+            java.util.Set<String> extraGtids = detectSlaveExtraData();
+            if (!extraGtids.isEmpty()) {
+                log.error("!!! 警告：检测到从库存在非复制来源的数据 !!!");
+                log.error("GTID 数量: {}", extraGtids.size());
+                log.error("触发数据一致性保护机制...");
+                handleSlaveDataContamination();
+            }
+        } catch (Exception e) {
+            log.debug("GTID 一致性检测失败: {}", e.getMessage());
+        }
     }
 
     private boolean checkMasterHealth() {
@@ -398,11 +424,108 @@ public class DbGuardianAutoConfiguration {
                 autoPromoteSlaveToMaster();
             }
         } else if (oldStatus == DataSourceStatus.SLAVE_PROMOTED) {
-            if (!masterFailed.get() && !recoveryInProgress.get()) {
+            if (!masterFailed.get() && !slaveFailed.get() && !recoveryInProgress.get()) {
                 log.info("原主库已恢复，开始恢复流程...");
-                recoverOriginalMaster();
+                recoverOriginalMasterAndRestoreReplication();
             }
         }
+    }
+
+    /**
+     * 恢复原主库并重建主从复制关系
+     * 流程：原主库作为从库连接到临时新主库 → 追赶数据 → 原主库恢复主库 → 原从库重新复制原主库
+     */
+    private void recoverOriginalMasterAndRestoreReplication() {
+        if (!recoveryInProgress.compareAndSet(false, true)) return;
+        try {
+            log.info("=== 开始恢复原主库并重建主从复制 ===");
+
+            // 1. 原主库连接到新主库并追赶数据
+            log.info("步骤1: 原主库开始追赶新主库...");
+            recoverMasterAsSlave();
+
+            // 2. 等待追赶完成
+            log.info("步骤2: 等待数据追赶完成...");
+            waitForCatchupOnMaster();
+
+            // 3. 原主库追赶完成后重新恢复为主库，不能交换数据源引用。
+            // 否则后续再次断开原主库时，会被误判为“从库连接失败”。
+            log.info("步骤3: 原主库恢复主库角色...");
+            restoreOriginalMasterRole();
+
+            // 4. 原从库重新作为从库复制原主库
+            log.info("步骤4: 配置原从库重新复制原主库...");
+            configureSlaveReplication(masterDataSourceBean, slaveDataSourceBean,
+                extractHost(masterUrl), extractPort(masterUrl));
+
+            // 5. 验证复制状态
+            log.info("步骤5: 验证主从复制状态...");
+            checkReplicationStatusAsync(slaveDataSourceBean, "重建后从库");
+
+            // 6. 状态恢复正常
+            currentStatus.set(DataSourceStatus.MASTER_ACTIVE);
+            currentNewMasterHost = null;
+            masterFailed.set(false);
+            slaveFailed.set(false);
+            DataSourceContextHolder.clear();
+            syncStatusToRedis(coordinationService);
+
+            log.info("=== 主从复制恢复完成 ===");
+
+        } catch (Exception e) {
+            log.error("恢复主从复制失败: {}", e.getMessage());
+            currentStatus.set(DataSourceStatus.SLAVE_PROMOTED);
+        } finally {
+            recoveryInProgress.set(false);
+        }
+    }
+
+    /**
+     * 原主库追赶完成后恢复为主库，保持 master/slave 数据源引用不变。
+     */
+    private void restoreOriginalMasterRole() {
+        disableReadOnlyOnDataSource(masterDataSourceBean);
+        stopSlaveReplication(masterDataSourceBean);
+        DataSourceContextHolder.useMaster();
+        log.info("原主库已恢复为主库");
+    }
+
+    /**
+     * 等待原主库追赶完成
+     */
+    private void waitForCatchupOnMaster() {
+        log.info("等待原主库追赶完成...");
+        int maxWaitSeconds = 300;
+        int waitedSeconds = 0;
+        int checkInterval = 2;
+
+        while (waitedSeconds < maxWaitSeconds) {
+            try {
+                Thread.sleep(checkInterval * 1000);
+                waitedSeconds += checkInterval;
+
+                try (Connection conn = masterDataSourceBean.getConnection();
+                     Statement stmt = conn.createStatement();
+                     ResultSet rs = stmt.executeQuery("SHOW SLAVE STATUS")) {
+                    if (rs.next()) {
+                        String ioRunning = rs.getString("Slave_IO_Running");
+                        String sqlRunning = rs.getString("Slave_SQL_Running");
+                        String behind = rs.getString("Seconds_Behind_Master");
+
+                        if ("Yes".equals(ioRunning) && "Yes".equals(sqlRunning)) {
+                            if ("0".equals(behind) || "NULL".equals(behind)) {
+                                log.info("原主库追赶完成");
+                                return;
+                            }
+                            log.info("追赶中... 延迟: {}秒", behind);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("检查追赶状态失败: {}", e.getMessage());
+            }
+        }
+        log.warn("追赶超时，继续执行");
     }
 
     private void autoPromoteSlaveToMaster() {
@@ -431,6 +554,20 @@ public class DbGuardianAutoConfiguration {
             log.info("从库只读模式已关闭");
         } catch (SQLException e) {
             log.warn("关闭从库只读模式失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 在指定数据源上启用只读模式
+     */
+    private void enableReadOnlyOnDataSource(DataSource ds) {
+        if (ds == null) return;
+        try (Connection conn = ds.getConnection(); Statement stmt = conn.createStatement()) {
+            stmt.execute("SET GLOBAL READ_ONLY=ON");
+            stmt.execute("SET GLOBAL SUPER_READ_ONLY=ON");
+            log.info("已启用数据源只读模式: READ_ONLY=ON, SUPER_READ_ONLY=ON");
+        } catch (SQLException e) {
+            log.warn("启用只读模式失败: {}", e.getMessage());
         }
     }
 
@@ -489,6 +626,19 @@ public class DbGuardianAutoConfiguration {
 
             log.info("主库 GTID: {}", masterGtid);
             log.info("从库 GTID: {}", slaveGtid);
+
+            // 检测从库是否有额外的写入数据
+            java.util.Set<String> slaveExtraGtids = detectSlaveExtraData();
+
+            // 如果从库有额外数据，触发数据一致性保护机制
+            if (!slaveExtraGtids.isEmpty()) {
+                log.warn("检测到从库存在非复制来源的数据！");
+                log.warn("从库可能曾被误写入数据，启用主库追赶机制");
+                handleSlaveDataContamination();
+                // 重新获取 GTID
+                masterGtid = getGtidPosition(masterDataSourceBean);
+                slaveGtid = getGtidPosition(slaveDataSourceBean);
+            }
 
             boolean masterNewer = isNewerThan(masterGtid, slaveGtid);
 
@@ -557,6 +707,395 @@ public class DbGuardianAutoConfiguration {
         }
     }
 
+    /**
+     * 检测从库是否有额外的数据（被误写入的数据）
+     * 通过比较 GTID 判断从库是否比主库多了事务
+     *
+     * @return 从库独有的 GTID 集合，如果为空表示无额外数据
+     */
+    private java.util.Set<String> detectSlaveExtraData() {
+        if (masterDataSourceBean == null || slaveDataSourceBean == null) {
+            return new java.util.HashSet<>();
+        }
+
+        try {
+            String masterGtid = getGtidPosition(masterDataSourceBean);
+            String slaveGtid = getGtidPosition(slaveDataSourceBean);
+
+            if (masterGtid.isEmpty() || slaveGtid.isEmpty()) {
+                return new java.util.HashSet<>();
+            }
+
+            java.util.Set<String> masterSet = new java.util.HashSet<>(java.util.Arrays.asList(masterGtid.split(",")));
+            java.util.Set<String> slaveSet = new java.util.HashSet<>(java.util.Arrays.asList(slaveGtid.split(",")));
+
+            // 从库独有的 GTID（这些事务只存在于从库，不在主库）
+            java.util.Set<String> extraInSlave = new java.util.HashSet<>(slaveSet);
+            extraInSlave.removeAll(masterSet);
+
+            if (!extraInSlave.isEmpty()) {
+                log.warn("检测到从库存在额外数据！GTID数量: {}", extraInSlave.size());
+                // 显示前5个GTID示例
+                StringBuilder examples = new StringBuilder();
+                int count = 0;
+                for (String g : extraInSlave) {
+                    if (count++ >= 5) break;
+                    if (examples.length() > 0) examples.append(", ");
+                    examples.append(g);
+                }
+                log.warn("从库额外GTID示例: {}", examples);
+            }
+
+            return extraInSlave;
+        } catch (Exception e) {
+            log.error("检测从库额外数据失败: {}", e.getMessage());
+            return new java.util.HashSet<>();
+        }
+    }
+
+    /**
+     * 从库被误写入数据后的处理策略
+     * 主库开始追赶从库，保持数据一致性
+     */
+    private void handleSlaveDataContamination() {
+        if (currentStatus.get() == DataSourceStatus.SLAVE_PROMOTED) {
+            log.warn("当前是从库升主状态，跳过数据追赶（从库已变成主库）");
+            return;
+        }
+
+        log.warn("=== 从库数据污染检测触发 ===");
+        log.warn("检测到从库存在非复制的写入操作，启用主库追赶机制");
+
+        try {
+            // 记录从库额外数据的 GTID
+            java.util.Set<String> extraGtids = detectSlaveExtraData();
+            if (extraGtids.isEmpty()) {
+                log.info("GTID集合为空，无需追赶");
+                return;
+            }
+
+            // 获取从库的 binlog 位置信息
+            String slaveBinlogInfo = getSlaveBinlogInfo();
+            log.info("从库 Binlog 信息: {}", slaveBinlogInfo);
+
+            // 执行主库追赶从库逻辑
+            masterCatchesUpFromSlave();
+
+            // 验证数据一致性
+            verifyDataConsistency();
+
+            log.warn("=== 主库追赶完成 ===");
+
+        } catch (Exception e) {
+            log.error("主库追赶失败: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 主库追赶从库
+     * 策略：将主库临时配置为从库，从原从库复制缺失的事务
+     */
+    private void masterCatchesUpFromSlave() {
+        if (masterDataSourceBean == null || slaveDataSourceBean == null) {
+            log.error("主库或从库连接不可用，无法执行追赶");
+            return;
+        }
+
+        if (replicationMasterUser == null || replicationMasterUser.isEmpty()) {
+            log.error("未配置复制用户，无法执行主库追赶");
+            return;
+        }
+
+        log.info("=== 开始主库追赶从库 ===");
+
+        try {
+            // 1. 获取从库作为"临时主库"的连接信息
+            String slaveHost = extractHost(slaveUrl);
+            int slavePort = extractPort(slaveUrl);
+
+            // 2. 停止主库的读写操作（临时降级）
+            log.info("停止主库写入，准备数据追赶...");
+            enableReadOnlyOnDataSource(masterDataSourceBean);
+
+            // 3. 停止主库原有的复制（如果有）
+            try (Connection masterConn = masterDataSourceBean.getConnection();
+                 Statement stmt = masterConn.createStatement()) {
+                try {
+                    stmt.execute("STOP SLAVE");
+                    stmt.execute("RESET SLAVE ALL");
+                } catch (SQLException ignored) {
+                    // 主库可能没有配置为从库
+                }
+            }
+
+            // 4. 获取从库的 GTID Executed 位置
+            String slaveGtidExecuted = getSlaveGtidExecuted();
+            log.info("从库 GTID Executed: {}", slaveGtidExecuted);
+
+            // 获取主库的 GTID UUID 列表
+            String masterGtidExecuted = getGtidPosition(masterDataSourceBean);
+            log.info("主库 GTID Executed: {}", masterGtidExecuted);
+
+            // 5. 在主库上设置 GTID 复制位置并启动复制
+            try (Connection masterConn = masterDataSourceBean.getConnection();
+                 Statement stmt = masterConn.createStatement()) {
+
+                // 先设置 gtid_purged，允许主库接受从从库过来的 UUID 事务
+                // 因为主库和从库的 binlog UUID 可能不同
+                java.util.Set<String> masterUuids = extractUuids(masterGtidExecuted);
+                java.util.Set<String> slaveUuids = extractUuids(slaveGtidExecuted);
+
+                // 从库的 UUID 集合中移除主库已有的 UUID
+                slaveUuids.removeAll(masterUuids);
+                if (!slaveUuids.isEmpty()) {
+                    String gtidPurged = String.join(",", slaveUuids);
+                    try {
+                        stmt.execute("SET GLOBAL gtid_purged = '" + gtidPurged + "'");
+                        log.info("已设置 gtid_purged: {}", gtidPurged);
+                    } catch (SQLException e) {
+                        log.debug("设置 gtid_purged 失败（可能已设置）: {}", e.getMessage());
+                    }
+                }
+
+                // 设置主库从从库复制（使用 GTID 自动定位）
+                String sql = String.format(
+                    "CHANGE MASTER TO MASTER_HOST='%s', MASTER_PORT=%d, MASTER_USER='%s', MASTER_PASSWORD='%s', MASTER_AUTO_POSITION=1",
+                    slaveHost, slavePort, replicationMasterUser, replicationMasterPassword);
+                stmt.execute(sql);
+
+                log.info("已配置主库从从库复制: {}:{}", slaveHost, slavePort);
+
+                // 6. 启动复制
+                stmt.execute("START SLAVE");
+                log.info("主库开始追赶从库...");
+            }
+
+            // 7. 等待追赶完成（检查复制状态）
+            waitForCatchup();
+
+            // 8. 停止追赶复制
+            try (Connection masterConn = masterDataSourceBean.getConnection();
+                 Statement stmt = masterConn.createStatement()) {
+                stmt.execute("STOP SLAVE");
+                stmt.execute("RESET SLAVE ALL");
+                log.info("已停止主库追赶复制");
+            }
+
+            // 9. 恢复主库读写模式
+            disableReadOnlyOnDataSource(masterDataSourceBean);
+
+            // 10. 恢复原主从复制关系
+            restoreOriginalReplication();
+
+            log.info("=== 主库追赶完成 ===");
+
+        } catch (SQLException e) {
+            log.error("主库追赶失败: {}", e.getMessage(), e);
+            // 确保恢复主库读写模式
+            try {
+                disableReadOnlyOnDataSource(masterDataSourceBean);
+            } catch (Exception ex) {
+                log.debug("恢复主库读写模式失败: {}", ex.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 获取从库的 GTID Executed 位置
+     */
+    private String getSlaveGtidExecuted() {
+        try (Connection conn = slaveDataSourceBean.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SHOW SLAVE STATUS")) {
+            if (rs.next()) {
+                return rs.getString("Executed_Gtid_Set");
+            }
+        } catch (SQLException e) {
+            log.debug("获取从库 GTID Executed 失败: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * 等待主库追赶完成
+     * 如果复制出错（表不存在等），跳过错误继续追赶
+     */
+    private void waitForCatchup() {
+        log.info("等待主库追赶完成...");
+
+        int maxWaitSeconds = 300; // 最多等待5分钟
+        int waitedSeconds = 0;
+        int checkInterval = 2; // 每2秒检查一次
+        int skipCount = 0;
+        int maxSkipCount = 10; // 最多跳过10个错误事务
+
+        while (waitedSeconds < maxWaitSeconds) {
+            try {
+                Thread.sleep(checkInterval * 1000);
+                waitedSeconds += checkInterval;
+
+                // 检查复制状态
+                boolean ioRunning = false;
+                boolean sqlRunning = false;
+                long secondsBehind = -1;
+                String lastError = null;
+                long lastErrorNumber = 0;
+
+                try (Connection masterConn = masterDataSourceBean.getConnection();
+                     Statement stmt = masterConn.createStatement();
+                     ResultSet rs = stmt.executeQuery("SHOW SLAVE STATUS")) {
+                    if (rs.next()) {
+                        ioRunning = "Yes".equals(rs.getString("Slave_IO_Running"));
+                        sqlRunning = "Yes".equals(rs.getString("Slave_SQL_Running"));
+                        String behind = rs.getString("Seconds_Behind_Master");
+                        lastError = rs.getString("Last_Error");
+                        String errNo = rs.getString("Last_Errno");
+                        if (behind != null && !behind.equals("NULL")) {
+                            secondsBehind = Long.parseLong(behind);
+                        }
+                        if (errNo != null && !errNo.isEmpty()) {
+                            lastErrorNumber = Long.parseLong(errNo);
+                        }
+                    }
+                }
+
+                // 检测可跳过的错误
+                if (lastErrorNumber > 0 && sqlRunning) {
+                    // 1146 = 表不存在, 1050 = 表已存在, 1032 = 记录不存在
+                    if (lastErrorNumber == 1146 || lastErrorNumber == 1050 || lastErrorNumber == 1032) {
+                        if (skipCount < maxSkipCount) {
+                            log.warn("检测到复制错误 {}: {}，跳过错误事务继续追赶...", lastErrorNumber, lastError);
+                            try {
+                                try (Connection skipConn = masterDataSourceBean.getConnection();
+                                     Statement skipStmt = skipConn.createStatement()) {
+                                    skipStmt.execute("STOP SLAVE");
+                                    skipStmt.execute("SET @@SESSION.SQL_SLAVE_SKIP_COUNTER = 1");
+                                    skipStmt.execute("START SLAVE");
+                                }
+                                skipCount++;
+                                log.info("已跳过错误事务，继续追赶 (已跳过 {} 个)", skipCount);
+                                continue;
+                            } catch (SQLException skipErr) {
+                                log.debug("跳过事务失败: {}", skipErr.getMessage());
+                            }
+                        } else {
+                            log.error("跳过错误次数过多，停止追赶");
+                            return;
+                        }
+                    } else if (lastErrorNumber != 0) {
+                        log.error("复制遇到不可忽略的错误 {}: {}", lastErrorNumber, lastError);
+                        return;
+                    }
+                }
+
+                if (ioRunning && sqlRunning) {
+                    if (secondsBehind == 0) {
+                        log.info("主库追赶完成（IO: {}, SQL: {}, 延迟: 0秒, 跳过 {} 个错误）", ioRunning, sqlRunning, skipCount);
+                        return;
+                    } else if (secondsBehind > 0) {
+                        log.info("追赶中... IO: {}, SQL: {}, 延迟: {}秒 (已等待{}秒)",
+                                 ioRunning, sqlRunning, secondsBehind, waitedSeconds);
+                    }
+                } else if (!sqlRunning && lastErrorNumber == 0) {
+                    // SQL 线程停止但没有错误，可能是追赶完成了
+                    log.info("SQL 线程已停止，等待追赶完成...");
+                }
+
+            } catch (Exception e) {
+                log.debug("检查追赶状态失败: {}", e.getMessage());
+            }
+        }
+
+        log.warn("主库追赶超时（等待超过{}秒）", maxWaitSeconds);
+    }
+
+    /**
+     * 恢复原主从复制关系
+     */
+    private void restoreOriginalReplication() {
+        if (masterDataSourceBean == null || slaveDataSourceBean == null) {
+            return;
+        }
+
+        if (replicationMasterUser == null || replicationMasterUser.isEmpty()) {
+            log.info("未配置复制用户，跳过原主从复制恢复");
+            return;
+        }
+
+        try {
+            String masterHost = extractHost(masterUrl);
+            int masterPort = extractPort(masterUrl);
+
+            log.info("恢复原主从复制: {}:{}", masterHost, masterPort);
+
+            // 配置从库复制主库
+            configureSlaveReplication(masterDataSourceBean, slaveDataSourceBean, masterHost, masterPort);
+
+        } catch (Exception e) {
+            log.error("恢复原主从复制失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 兼容旧方法名
+     */
+    private void syncExtraDataFromSlave(java.util.Set<String> extraGtids) {
+        masterCatchesUpFromSlave();
+    }
+
+    /**
+     * 获取从库的 binlog 信息
+     */
+    private String getSlaveBinlogInfo() {
+        try (Connection conn = slaveDataSourceBean.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SHOW SLAVE STATUS")) {
+            if (rs.next()) {
+                String file = rs.getString("Master_Log_File");
+                String pos = rs.getString("Read_Master_Log_Pos");
+                return String.format("File: %s, Position: %s", file, pos);
+            }
+        } catch (SQLException e) {
+            log.debug("获取从库 binlog 信息失败: {}", e.getMessage());
+        }
+        return "N/A";
+    }
+
+    /**
+     * 停止从库复制
+     */
+    private void stopSlaveReplication(com.zaxxer.hikari.HikariDataSource ds) {
+        if (ds == null) return;
+        try (Connection conn = ds.getConnection(); Statement stmt = conn.createStatement()) {
+            stmt.execute("STOP SLAVE");
+            stmt.execute("RESET SLAVE ALL");
+            log.info("已停止从库复制");
+        } catch (SQLException e) {
+            log.debug("停止从库复制失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 验证主从数据一致性
+     */
+    private void verifyDataConsistency() {
+        executorService.submit(() -> {
+            try {
+                Thread.sleep(3000); // 等待复制追赶
+
+                java.util.Set<String> remainingExtra = detectSlaveExtraData();
+                if (remainingExtra.isEmpty()) {
+                    log.info("数据一致性验证通过：主从 GTID 已同步");
+                } else {
+                    log.warn("数据一致性警告：仍有 {} 个 GTID 未同步", remainingExtra.size());
+                    log.warn("建议：使用 pt-table-checksum 等工具进行深度数据校验");
+                }
+            } catch (Exception e) {
+                log.debug("数据一致性验证失败: {}", e.getMessage());
+            }
+        });
+    }
+
     private void configureSlaveReplication(DataSource masterDs, DataSource slaveDs, String masterHost, int masterPort) {
         if (replicationMasterUser == null || replicationMasterUser.isEmpty() ||
             replicationMasterPassword == null || replicationMasterPassword.isEmpty()) {
@@ -575,6 +1114,10 @@ public class DbGuardianAutoConfiguration {
                 masterHost, masterPort, replicationMasterUser, replicationMasterPassword);
             stmt.execute(sql);
             stmt.execute("START SLAVE");
+
+            // 启用从库只读模式，防止任何写入操作
+            enableReadOnlyOnDataSource(slaveDs);
+
             log.info("已配置从库复制主库: {}:{}", masterHost, masterPort);
 
             // 异步检查复制状态
@@ -621,6 +1164,27 @@ public class DbGuardianAutoConfiguration {
         } catch (SQLException e) {
             log.debug("检查复制状态失败: {}", e.getMessage());
         }
+    }
+
+    /**
+     * 从 GTID 集合中提取所有 UUID
+     * @param gtidSet GTID 集合字符串，格式如 "uuid1:1-100,uuid2:1-50"
+     * @return UUID 集合
+     */
+    private java.util.Set<String> extractUuids(String gtidSet) {
+        java.util.Set<String> uuids = new java.util.HashSet<>();
+        if (gtidSet == null || gtidSet.isEmpty()) {
+            return uuids;
+        }
+        // GTID 格式: uuid:interval 或 uuid:interval1-interval2
+        String[] gtids = gtidSet.split(",");
+        for (String gtid : gtids) {
+            String[] parts = gtid.trim().split(":");
+            if (parts.length >= 1) {
+                uuids.add(parts[0]);
+            }
+        }
+        return uuids;
     }
 
     private String extractHost(String jdbcUrl) {

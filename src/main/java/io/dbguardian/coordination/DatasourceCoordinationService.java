@@ -212,6 +212,42 @@ public class DatasourceCoordinationService {
     }
 
     /**
+     * 广播故障转移事件
+     * @param oldMasterId 原主库ID
+     * @param newMasterId 新主库ID
+     */
+    public void broadcastFailoverEvent(String oldMasterId, String newMasterId) {
+        if (redisTemplate == null) {
+            return;
+        }
+        try {
+            String message = String.format("FAILOVER:%s:%s", oldMasterId, newMasterId);
+            redisTemplate.convertAndSend(STATUS_CHANNEL, message);
+            log.info("广播故障转移事件: {} -> {}", oldMasterId, newMasterId);
+        } catch (Exception e) {
+            log.error("广播故障转移事件失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 广播从库状态变更
+     * @param slaveId 从库ID
+     * @param available 是否可用
+     */
+    public void broadcastSlaveStatus(String slaveId, boolean available) {
+        if (redisTemplate == null) {
+            return;
+        }
+        try {
+            String message = String.format("SLAVE_STATUS:%s:%s", slaveId, available);
+            redisTemplate.convertAndSend(STATUS_CHANNEL, message);
+            log.info("广播从库状态变更: {} -> {}", slaveId, available ? "UP" : "DOWN");
+        } catch (Exception e) {
+            log.error("广播从库状态变更失败: {}", e.getMessage());
+        }
+    }
+
+    /**
      * 初始化协调服务
      * 在应用启动时调用
      */

@@ -1,21 +1,17 @@
 package io.dbguardian.failover;
 
 import io.dbguardian.coordination.DatasourceCoordinationService;
-import io.dbguardian.enums.DataSourceStatus;
 import io.dbguardian.loadbalance.DataSourceWrapper;
 import io.dbguardian.registry.DataSourceRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -58,8 +54,8 @@ public class FailoverController {
         try {
             log.warn("检测到主库 {} 故障，开始故障转移流程", failedMasterId);
 
-            // 1. 检查分布式锁
-            if (coordinationService != null && !coordinationService.tryAcquireFailoverLock()) {
+            // 1. 检查分布式锁（锁过期时间60秒）
+            if (coordinationService != null && !coordinationService.tryAcquireFailoverLock(60)) {
                 log.info("其他实例正在处理故障转移，本实例跳过");
                 return;
             }

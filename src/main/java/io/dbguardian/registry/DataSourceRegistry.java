@@ -4,7 +4,6 @@ import io.dbguardian.loadbalance.DataSourceWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import javax.sql.DataSource;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -231,14 +230,17 @@ public class DataSourceRegistry {
      */
     public Map<String, Object> getStats() {
         Map<String, Object> stats = new HashMap<>();
-        stats.put("masters", Map.of(
-                "total", masters.size(),
-                "available", getAvailableMasterCount()
-        ));
-        stats.put("slaves", Map.of(
-                "total", slaves.size(),
-                "available", getAvailableSlaveCount()
-        ));
+
+        Map<String, Object> masterStats = new HashMap<>();
+        masterStats.put("total", masters.size());
+        masterStats.put("available", getAvailableMasterCount());
+        stats.put("masters", masterStats);
+
+        Map<String, Object> slaveStats = new HashMap<>();
+        slaveStats.put("total", slaves.size());
+        slaveStats.put("available", getAvailableSlaveCount());
+        stats.put("slaves", slaveStats);
+
         return stats;
     }
 }

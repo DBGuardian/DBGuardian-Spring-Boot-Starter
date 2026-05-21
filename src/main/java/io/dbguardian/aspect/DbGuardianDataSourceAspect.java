@@ -42,7 +42,7 @@ public class DbGuardianDataSourceAspect {
             DataSourceStatus status = dataSourceConfig.getCurrentStatus();
 
             if (status == DataSourceStatus.SLAVE_PROMOTED) {
-                DbGuardianAutoConfiguration.DataSourceContextHolder.useMaster();
+                DbGuardianAutoConfiguration.DataSourceContextHolder.useSlave();
             } else if (isReadMethod(methodName)) {
                 DbGuardianAutoConfiguration.DataSourceContextHolder.useSlave();
             } else {
