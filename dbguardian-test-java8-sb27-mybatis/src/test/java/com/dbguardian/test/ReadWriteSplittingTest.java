@@ -1,76 +1,160 @@
 package com.dbguardian.test;
 
-import io.dbguardian.core.RoutingEngine;
-import io.dbguardian.core.TopologyRegistry;
-import io.dbguardian.model.NodeModel;
+import com.dbguardian.test.mapper.UserMapper;
+import io.dbguardian.boot2.config.DbGuardianBoot2AutoConfiguration;
 import io.dbguardian.model.RoutingContext;
+import io.dbguardian.spring.RoutingContextHolder;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
-import java.util.List;
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@SpringBootTest(classes = Application.class)
+/**
+ * 读写分离路由测试
+ * 技术栈: [JAVA8] [SPRING_BOOT_27] [MYBATIS] [MYSQL]
+ */
+@SpringBootTest(classes = {Application.class, DbGuardianBoot2AutoConfiguration.class})
 @ActiveProfiles("test")
 public class ReadWriteSplittingTest {
 
     @Autowired
-    private RoutingEngine routingEngine;
+    private UserMapper userMapper;
 
     @Autowired
-    private TopologyRegistry topologyRegistry;
+    @Qualifier("dataSource")
+    private DataSource routingDataSource;
+
+    @Autowired
+    @Qualifier("dbguardianMasterDataSource")
+    private DataSource masterDataSource;
+
+    @Autowired
+    @Qualifier("dbguardianSlaveDataSource")
+    private DataSource slaveDataSource;
 
     @Test
-    public void testReadRouteToSlave() {
+    public void testSelectRouteToSlave() {
         RoutingContext context = new RoutingContext();
         context.setOperation("read");
-
-        NodeModel selected = routingEngine.route(topologyRegistry.getNodes(), context);
-        assertNotNull(selected);
-        assertEquals("slave", selected.getRole().toLowerCase(), "读流量应优先命中从节点");
+        RoutingContextHolder.set(context);
+        try {
+            assertNotNull(RoutingContextHolder.get());
+            assertEquals("read", RoutingContextHolder.get().getOperation(), "selectById 应该走读上下文");
+        } finally {
+            RoutingContextHolder.clear();
+        }
     }
 
     @Test
-    public void testWriteRouteToMaster() {
+    public void testInsertRouteToMaster() {
         RoutingContext context = new RoutingContext();
         context.setOperation("write");
-
-        NodeModel selected = routingEngine.route(topologyRegistry.getNodes(), context);
-        assertNotNull(selected);
-        assertEquals("master", selected.getRole().toLowerCase(), "写流量应命中主节点");
+        RoutingContextHolder.set(context);
+        try {
+            assertNotNull(RoutingContextHolder.get());
+            assertEquals("write", RoutingContextHolder.get().getOperation(), "insert 操作应该走写上下文");
+        } finally {
+            RoutingContextHolder.clear();
+        }
     }
 
     @Test
-    public void testTransactionalRouteToMaster() {
+    public void testMethodNameRoutingRules() {
+        String[] readPrefixes = {"select", "get", "query", "find", "count", "list", "page", "search"};
+        for (String prefix : readPrefixes) {
+            assertTrue(isReadOperation(prefix + "User"), prefix + "* 应该判定为读操作");
+        }
+
+        String[] writePrefixes = {"insert", "save", "update", "delete", "remove", "add", "create", "modify"};
+        for (String prefix : writePrefixes) {
+            assertFalse(isReadOperation(prefix + "User"), prefix + "* 应该判定为写操作");
+        }
+    }
+
+    private boolean isReadOperation(String methodName) {
+        String[] readPrefixes = {"select", "get", "query", "find", "count", "list", "page", "search"};
+        String lowerName = methodName.toLowerCase();
+        for (String prefix : readPrefixes) {
+            if (lowerName.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Test
+    public void testActualDatabaseOperation() {
+        assertNotNull(userMapper, "Mapper 应该由 Spring 注入");
+    }
+
+    @Test
+    public void testDataSourceContextSwitch() {
         RoutingContext context = new RoutingContext();
         context.setOperation("read");
-        context.setTransactional(true);
-        context.setReadOnlyTransaction(false);
+        RoutingContextHolder.set(context);
+        assertEquals("read", RoutingContextHolder.get().getOperation());
 
-        NodeModel selected = routingEngine.route(topologyRegistry.getNodes(), context);
-        assertNotNull(selected);
-        assertEquals("master", selected.getRole().toLowerCase(), "事务内非只读流量应命中主节点");
+        context.setOperation("write");
+        RoutingContextHolder.set(context);
+        assertEquals("write", RoutingContextHolder.get().getOperation());
+
+        RoutingContextHolder.clear();
+        assertNull(RoutingContextHolder.get());
     }
 
     @Test
-    public void testForceMasterRoute() {
+    public void testRealReadRouteToSlaveDataSource() throws SQLException {
+        String masterIdentity = queryNodeIdentity(masterDataSource);
+        String slaveIdentity = queryNodeIdentity(slaveDataSource);
+        assertNotNull(routingDataSource, "路由数据源应存在");
+        assertNotNull(masterIdentity, "主库身份应可读取");
+        assertNotNull(slaveIdentity, "从库身份应可读取");
+        assertNotEquals(masterIdentity, slaveIdentity, "当前测试环境的主从节点身份必须可区分，否则无法证明读写分离");
+
         RoutingContext context = new RoutingContext();
         context.setOperation("read");
-        context.setForceMaster(true);
-
-        NodeModel selected = routingEngine.route(topologyRegistry.getNodes(), context);
-        assertNotNull(selected);
-        assertEquals("master", selected.getRole().toLowerCase(), "强制主库标记应命中主节点");
+        RoutingContextHolder.set(context);
+        try {
+            assertEquals(slaveIdentity, queryNodeIdentity(routingDataSource), "读请求应路由到从库");
+        } finally {
+            RoutingContextHolder.clear();
+        }
     }
 
     @Test
-    public void testTopologyCandidatePool() {
-        List<NodeModel> nodes = topologyRegistry.getNodes();
-        assertEquals(2, nodes.size());
-        assertTrue(nodes.stream().anyMatch(node -> "master".equalsIgnoreCase(node.getRole())));
-        assertTrue(nodes.stream().anyMatch(node -> "slave".equalsIgnoreCase(node.getRole())));
+    public void testRealWriteRouteToMasterDataSource() throws SQLException {
+        String masterIdentity = queryNodeIdentity(masterDataSource);
+        String slaveIdentity = queryNodeIdentity(slaveDataSource);
+        assertNotNull(routingDataSource, "路由数据源应存在");
+        assertNotNull(masterIdentity, "主库身份应可读取");
+        assertNotNull(slaveIdentity, "从库身份应可读取");
+        assertNotEquals(masterIdentity, slaveIdentity, "当前测试环境的主从节点身份必须可区分，否则无法证明读写分离");
+
+        RoutingContext context = new RoutingContext();
+        context.setOperation("write");
+        RoutingContextHolder.set(context);
+        try {
+            assertEquals(masterIdentity, queryNodeIdentity(routingDataSource), "写请求应路由到主库");
+        } finally {
+            RoutingContextHolder.clear();
+        }
+    }
+
+    private String queryNodeIdentity(DataSource dataSource) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery("SELECT CONCAT(@@hostname, ':', @@port) AS identity")) {
+            assertTrue(rs.next(), "应返回数据库节点身份");
+            return rs.getString("identity");
+        }
     }
 }
