@@ -1,0 +1,61 @@
+spring:
+  application:
+    name: dbguardian-test
+
+  datasource:
+    master:
+      url: jdbc:mysql://192.168.3.47:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      username: root
+      password: zhuzhou9uu897@
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      hikari:
+        maximum-pool-size: 5
+        minimum-idle: 1
+        connection-timeout: 10000
+        idle-timeout: 300000
+        max-lifetime: 600000
+    slave:
+      url: jdbc:mysql://192.168.3.48:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      username: root
+      password: zhuzhou9uu897@
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      hikari:
+        maximum-pool-size: 5
+        minimum-idle: 1
+        connection-timeout: 10000
+        idle-timeout: 300000
+        max-lifetime: 600000
+    replication:
+      master-host: 192.168.3.47
+      master-port: 3306
+      master-user: repl
+      master-password: zhuzhou9uu897@
+      auto-reconnect: true
+    allow-degraded-startup: true
+
+  redis:
+    host: 192.168.3.47
+    port: 6379
+    password: zhuzhou9uu897@
+    database: 1
+    timeout: 5000ms
+    lettuce:
+      pool:
+        max-active: 8
+        max-wait: 1000ms
+        max-idle: 2
+        min-idle: 1
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  type-aliases-package: com.dbguardian.test.entity
+
+logging:
+  level:
+    root: INFO
+    com.dbguardian.test: DEBUG
+    io.dbguardian: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{50} - %msg%n"

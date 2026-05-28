@@ -1,0 +1,86 @@
+server:
+  port: 8081
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: dbguardian-test-java8-sb27-mybatis
+
+  main:
+    allow-circular-references: true
+
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+
+  datasource:
+    master:
+      url: jdbc:mysql://192.168.3.150:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      username: root
+      password: zhuzhou9uu897@
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      hikari:
+        maximum-pool-size: 10
+        minimum-idle: 2
+        connection-timeout: 30000
+        idle-timeout: 600000
+        max-lifetime: 1800000
+    slave:
+      url: jdbc:mysql://192.168.3.151:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      username: root
+      password: zhuzhou9uu897@
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      hikari:
+        maximum-pool-size: 10
+        minimum-idle: 2
+        connection-timeout: 30000
+        idle-timeout: 600000
+        max-lifetime: 1800000
+    replication:
+      master-host: 192.168.3.150
+      master-port: 3306
+      master-user: repl
+      master-password: zhuzhou9uu897@
+      auto-reconnect: true
+    allow-degraded-startup: true
+
+  redis:
+    host: 192.168.3.150
+    port: 6379
+    password: zhuzhou9uu897@
+    database: 0
+    timeout: 10000ms
+    lettuce:
+      pool:
+        max-active: 20
+        max-wait: 3000ms
+        max-idle: 5
+        min-idle: 1
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  type-aliases-package: com.dbguardian.test.entity
+
+knife4j:
+  enable: true
+  openapi:
+    title: DBGuardian 测试项目API文档
+    description: 用于测试读写分离功能
+    version: 1.0.0
+
+logging:
+  level:
+    root: INFO
+    com.dbguardian.test: DEBUG
+    io.dbguardian: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{50} - %msg%n"
