@@ -146,6 +146,79 @@ public class FailoverController {
         return true;
     }
 
+    public synchronized boolean recoverMasterFromContaminatedSlave(String contaminatedSlaveId,
+                                                                  String gtidDecision,
+                                                                  String reason) {
+        if (runtimeStateManager == null) {
+            return false;
+        }
+        ClusterRuntimeState state = runtimeStateManager.current();
+        if (state == null || ClusterStatus.SLAVE_PROMOTED.equals(state.getStatus())) {
+            log.warn("当前处于从库升主窗口，跳过 GTID 污染恢复: slaveId={}", contaminatedSlaveId);
+            return false;
+        }
+        DataSourceWrapper originalMaster = resolveCurrentMaster();
+        if (originalMaster == null && state.getActiveMasterId() != null) {
+            originalMaster = resolveNodeById(state.getActiveMasterId());
+        }
+        DataSourceWrapper contaminatedSlave = resolveNodeById(contaminatedSlaveId);
+        if (originalMaster == null || contaminatedSlave == null) {
+            log.warn("GTID 污染恢复缺少节点: master={}, slave={}",
+                    originalMaster == null ? null : originalMaster.getId(),
+                    contaminatedSlaveId);
+            return false;
+        }
+        if (isBlank(replicationUser) || isBlank(replicationPassword)) {
+            log.warn("未配置复制用户，无法执行 GTID 污染恢复: slaveId={}", contaminatedSlaveId);
+            return false;
+        }
+
+        runtimeStateManager.markContamination(
+                contaminatedSlave.getId(),
+                true,
+                true,
+                gtidDecision,
+                "gtid_extra_transactions_detected",
+                reason + "_contamination_detected"
+        );
+        log.warn("检测到从库存在额外 GTID，开始主库追赶从库: master={}, slave={}, gtidDecision={}",
+                originalMaster.getId(), contaminatedSlave.getId(), gtidDecision);
+
+        try (Connection connection = originalMaster.getDataSource().getConnection();
+             Statement statement = connection.createStatement()) {
+            enableReadOnly(originalMaster, "GTID 污染恢复阶段已冻结主库写入");
+            stopSlaveReplication(statement);
+            String sql = String.format(
+                    "CHANGE MASTER TO MASTER_HOST='%s', MASTER_PORT=%d, MASTER_USER='%s', MASTER_PASSWORD='%s', MASTER_AUTO_POSITION=1",
+                    extractHost(contaminatedSlave.getUrl()),
+                    extractPort(contaminatedSlave.getUrl()),
+                    replicationUser,
+                    replicationPassword);
+            statement.execute(sql);
+            statement.execute("START SLAVE");
+            log.info("主库已开始从被污染从库追赶事务: master={}, slave={}", originalMaster.getId(), contaminatedSlave.getId());
+        } catch (SQLException ex) {
+            log.error("GTID 污染恢复启动失败: {}", ex.getMessage(), ex);
+            disableReadOnly(originalMaster, "GTID 污染恢复失败，已恢复主库可写");
+            return false;
+        }
+
+        waitForCatchupOnMaster(originalMaster);
+
+        try (Connection connection = originalMaster.getDataSource().getConnection();
+             Statement statement = connection.createStatement()) {
+            stopSlaveReplication(statement);
+        } catch (SQLException ex) {
+            log.debug("GTID 污染恢复结束时停止主库复制失败: {}", ex.getMessage());
+        }
+        disableReadOnly(originalMaster, "GTID 污染恢复完成，主库已恢复可写");
+        restoreOriginalReplication(originalMaster, contaminatedSlave);
+        logReplicationStatus(contaminatedSlave, "gtid_contamination_recovery");
+        runtimeStateManager.markMasterActive(originalMaster.getId(), contaminatedSlave.getId(), reason + "_consistency_restored");
+        log.warn("GTID 污染恢复完成: master={}, slave={}", originalMaster.getId(), contaminatedSlave.getId());
+        return true;
+    }
+
     private void executeFailover(String failedMasterId, DataSourceWrapper newMaster) {
         String oldMasterId = currentMasterId == null ? failedMasterId : currentMasterId;
         try {

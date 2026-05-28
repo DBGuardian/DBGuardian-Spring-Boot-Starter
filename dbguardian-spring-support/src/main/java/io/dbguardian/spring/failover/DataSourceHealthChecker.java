@@ -17,6 +17,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -127,7 +128,7 @@ public class DataSourceHealthChecker {
                                     : promotionCandidate ? "slave_promotion_candidate"
                                     : "slave_health_check_ok");
                 }
-                applyGtidProtection();
+                applyGtidProtection(slave, promotedActiveMaster);
                 if (!wasAvailable) {
                     registry.updateSlaveAvailability(slave.getId(), true);
                     log.info("从库 {} 恢复", slave.getId());
@@ -138,7 +139,7 @@ public class DataSourceHealthChecker {
                 if (runtimeStateManager != null) {
                     runtimeStateManager.updateSlaveStatus(slave.getId(), healthy, replicationHealthy, lag, "slave_health_check_failed");
                 }
-                applyGtidProtection();
+                applyGtidProtection(slave, promotedActiveMaster);
                 if (wasAvailable) {
                     registry.updateSlaveAvailability(slave.getId(), false);
                     log.warn("从库 {} 不可用，已从负载池移除", slave.getId());
@@ -148,18 +149,51 @@ public class DataSourceHealthChecker {
         }
     }
 
-    private void applyGtidProtection() {
-        if (!gtidProtectionEnabled || runtimeStateManager == null || gtidConsistencyInspector == null) {
+    private void applyGtidProtection(DataSourceWrapper slave, boolean promotedActiveMaster) {
+        if (!gtidProtectionEnabled || runtimeStateManager == null || gtidConsistencyInspector == null || slave == null) {
             return;
         }
+        if (promotedActiveMaster) {
+            return;
+        }
+        ClusterRuntimeState state = runtimeStateManager.current();
+        if (state == null) {
+            return;
+        }
+        if (ClusterStatus.CONTAMINATION_RECOVERY.equals(state.getStatus())) {
+            return;
+        }
+        DataSourceWrapper master = resolveCurrentMasterForSlaveCheck(state, slave.getId());
+        if (master == null) {
+            return;
+        }
+
+        String masterGtidSet = getMasterGtidPosition(master);
+        String slaveGtidSet = getExecutedGtidSet(slave);
+        Set<String> extraTransactions = gtidConsistencyInspector.detectExtraTransactions(masterGtidSet, slaveGtidSet);
+        if (!extraTransactions.isEmpty()) {
+            String gtidDecision = gtidConsistencyInspector.describeExtraTransactions(extraTransactions);
+            runtimeStateManager.markContamination(
+                    slave.getId(),
+                    true,
+                    true,
+                    gtidDecision,
+                    "gtid_extra_transactions_detected",
+                    "gtid_contamination_detected"
+            );
+            log.warn("检测到从库存在额外 GTID，暂停从读并触发主库追赶: slaveId={}, gtidDecision={}", slave.getId(), gtidDecision);
+            failoverController.recoverMasterFromContaminatedSlave(slave.getId(), gtidDecision, "gtid_contamination_detected");
+            return;
+        }
+
         if (!blockSlaveReadsOnRisk) {
             return;
         }
-        String blockedSlaveId = gtidConsistencyInspector.findBlockedSlaveId(runtimeStateManager.current());
+        String blockedSlaveId = gtidConsistencyInspector.findBlockedSlaveId(state);
         if (blockedSlaveId != null) {
             runtimeStateManager.markContamination(
                     blockedSlaveId,
-                    true,
+                    false,
                     true,
                     "gtid_risk_detected",
                     "gtid_protection_blocked_slave_reads",
@@ -253,6 +287,57 @@ public class DataSourceHealthChecker {
         } catch (Exception ex) {
             return 0L;
         }
+    }
+
+    private DataSourceWrapper resolveCurrentMasterForSlaveCheck(ClusterRuntimeState state, String slaveNodeId) {
+        if (state != null && state.getActiveMasterId() != null && !state.getActiveMasterId().equals(slaveNodeId)) {
+            DataSourceWrapper activeMaster = registry.getMaster(state.getActiveMasterId());
+            if (activeMaster != null) {
+                return activeMaster;
+            }
+            DataSourceWrapper promotedMaster = registry.getSlave(state.getActiveMasterId());
+            if (promotedMaster != null && !promotedMaster.getId().equals(slaveNodeId)) {
+                return promotedMaster;
+            }
+        }
+        for (DataSourceWrapper master : registry.getAllMasters()) {
+            if (!master.getId().equals(slaveNodeId)) {
+                return master;
+            }
+        }
+        return null;
+    }
+
+    private String getMasterGtidPosition(DataSourceWrapper master) {
+        if (master == null) {
+            return null;
+        }
+        try (Connection connection = master.getDataSource().getConnection();
+             Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery("SHOW MASTER STATUS")) {
+            if (rs.next()) {
+                return rs.getString("Executed_Gtid_Set");
+            }
+        } catch (SQLException ex) {
+            log.debug("读取主库 GTID 失败: nodeId={}, reason={}", master.getId(), ex.getMessage());
+        }
+        return null;
+    }
+
+    private String getExecutedGtidSet(DataSourceWrapper slave) {
+        try (Connection connection = slave.getDataSource().getConnection();
+             Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery("SHOW SLAVE STATUS")) {
+            if (rs.next()) {
+                String executed = rs.getString("Executed_Gtid_Set");
+                if (executed != null && !executed.trim().isEmpty()) {
+                    return executed;
+                }
+            }
+        } catch (SQLException ex) {
+            log.debug("读取从库 Executed_Gtid_Set 失败: nodeId={}, reason={}", slave.getId(), ex.getMessage());
+        }
+        return getMasterGtidPosition(slave);
     }
 
     public void triggerHealthCheck() {

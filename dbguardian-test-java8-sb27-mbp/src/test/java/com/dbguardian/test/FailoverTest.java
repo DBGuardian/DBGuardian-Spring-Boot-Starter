@@ -1,6 +1,7 @@
 package com.dbguardian.test;
 
 import io.dbguardian.boot2.config.DbGuardianBoot2AutoConfiguration;
+import io.dbguardian.core.GtidConsistencyInspector;
 import io.dbguardian.core.datasource.DataSourceWrapper;
 import io.dbguardian.core.registry.DataSourceRegistry;
 import io.dbguardian.runtime.ClusterStatus;
@@ -126,10 +127,11 @@ public class FailoverTest {
     }
 
     @Test
-    public void testOriginalMasterRecoveryRestoresReplicationLoop() throws Exception {
+    public void testOriginalMasterRecoversExtraTransactionsFromContaminatedSlave() throws Exception {
         DataSourceRegistry registry = new DataSourceRegistry();
         ClusterRuntimeStateManager runtimeStateManager = new ClusterRuntimeStateManager();
         runtimeStateManager.initialize("failover-test", "master", "slave");
+
         FailoverController failoverController = new FailoverController(registry, null);
         failoverController.setRuntimeStateManager(runtimeStateManager);
         failoverController.setReplicationUser("repl");
@@ -140,27 +142,24 @@ public class FailoverTest {
         DataSourceHealthChecker checker = new DataSourceHealthChecker(registry, failoverController);
         checker.setRuntimeStateManager(runtimeStateManager);
         checker.setFailoverEnabled(false);
+        checker.setGtidProtectionEnabled(true);
+        checker.setBlockSlaveReadsOnRisk(true);
+        checker.setGtidConsistencyInspector(new GtidConsistencyInspector());
 
-        ScriptedDataSource masterDataSource = ScriptedDataSource.masterDownThenRecovered();
-        ScriptedDataSource slaveDataSource = ScriptedDataSource.slaveHealthyThenPromotedThenReplicated();
+        ScriptedDataSource masterDataSource = ScriptedDataSource.masterNeedsCatchupFromSlave();
+        ScriptedDataSource slaveDataSource = ScriptedDataSource.slaveContaminatedWithExtraTransactions();
         registry.registerMaster("master", wrapper("master", true, masterDataSource));
         registry.registerSlave("slave", wrapper("slave", false, slaveDataSource));
 
         invokePrivate(checker, "checkSlaves");
-        invokePrivate(checker, "checkMasters");
 
-        assertEquals(ClusterStatus.SLAVE_PROMOTED, runtimeStateManager.current().getStatus(), "故障后应先完成升主");
+        assertEquals(ClusterStatus.MASTER_ACTIVE, runtimeStateManager.current().getStatus(), "GTID 污染恢复完成后应回到稳定主从态");
+        assertEquals("master", runtimeStateManager.current().getActiveMasterId(), "污染恢复后主库应仍然是原主");
+        assertFalse(runtimeStateManager.current().isContaminationDetected(), "污染恢复完成后应清除污染标记");
+        assertFalse(runtimeStateManager.current().isSlaveReadsBlocked(), "污染恢复完成后应恢复从读");
 
-        failoverController.handleOriginalMasterRecovery("master");
-        assertEquals(ClusterStatus.RECOVERING_ORIGINAL_MASTER, runtimeStateManager.current().getStatus(), "检测到原主恢复后应进入恢复窗口");
-
-        boolean recovered = failoverController.recoverOriginalMasterAndRestoreReplication("manual");
-        assertTrue(recovered, "原主恢复闭环应执行成功");
-        assertEquals(ClusterStatus.MASTER_ACTIVE, runtimeStateManager.current().getStatus(), "恢复完成后应回到主从稳定态");
-        assertEquals("master", runtimeStateManager.current().getActiveMasterId(), "原主应重新成为主库");
-
-        assertRestoredMasterWritable(masterDataSource);
-        assertPromotedSlaveReplicatingFromOriginalMaster(slaveDataSource);
+        assertMasterCaughtUpFromContaminatedSlave(masterDataSource);
+        assertContaminatedSlaveReplicatedBackToMaster(slaveDataSource);
     }
 
     private static DataSourceWrapper wrapper(String id, boolean master, DataSource dataSource) {
@@ -212,6 +211,23 @@ public class FailoverTest {
         assertEquals("0", querySlaveStatusField(dataSource, "Seconds_Behind_Master"), "切回后原从库应追平原主");
     }
 
+    private static void assertMasterCaughtUpFromContaminatedSlave(ScriptedDataSource dataSource) throws SQLException {
+        assertTrue(dataSource.executedSqlContains("SET GLOBAL READ_ONLY=ON"), "主库追赶前应先冻结写入");
+        assertTrue(dataSource.executedSqlContains("START SLAVE"), "主库追赶阶段应启动复制");
+        assertEquals("OFF", queryVariable(dataSource, "read_only"), "主库追赶完成后应恢复可写");
+        assertEquals("OFF", queryVariable(dataSource, "super_read_only"), "主库追赶完成后应恢复超级可写");
+        assertEquals("uuid-master:1-10,uuid-slave-extra:1-2", queryMasterGtid(dataSource), "主库应追到被污染从库的额外事务");
+        assertFalse(hasSlaveStatus(dataSource), "主库追赶完成后不应继续保留从库复制状态");
+    }
+
+    private static void assertContaminatedSlaveReplicatedBackToMaster(ScriptedDataSource dataSource) throws SQLException {
+        assertTrue(dataSource.executedSqlContains("CHANGE MASTER TO MASTER_HOST='127.0.0.1', MASTER_PORT=3306, MASTER_USER='repl', MASTER_PASSWORD='repl-pass', MASTER_AUTO_POSITION=1"), "恢复后从库应重新挂回主库");
+        assertEquals("ON", queryVariable(dataSource, "read_only"), "污染从库恢复后应重新进入只读");
+        assertEquals("ON", queryVariable(dataSource, "super_read_only"), "污染从库恢复后应重新进入超级只读");
+        assertTrue(hasSlaveStatus(dataSource), "污染从库恢复后应重新带有复制状态");
+        assertEquals("uuid-master:1-10,uuid-slave-extra:1-2", querySlaveStatusField(dataSource, "Executed_Gtid_Set"), "恢复后从库执行位点应与主库一致");
+    }
+
     private static String queryVariable(DataSource dataSource, String variableName) throws SQLException {
         try (Connection connection = dataSource.getConnection();
              Statement statement = connection.createStatement();
@@ -238,6 +254,15 @@ public class FailoverTest {
         }
     }
 
+    private static String queryMasterGtid(DataSource dataSource) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery("SHOW MASTER STATUS")) {
+            assertTrue(rs.next(), "应返回主库 GTID 状态");
+            return rs.getString("Executed_Gtid_Set");
+        }
+    }
+
     private static final class ScriptedDataSource implements DataSource {
 
         private final Deque<ConnectionPlan> plans = new ArrayDeque<ConnectionPlan>();
@@ -248,6 +273,9 @@ public class FailoverTest {
         private String slaveIoRunning = "No";
         private String slaveSqlRunning = "No";
         private String slaveLag;
+        private String masterGtidSet = "uuid-master:1-10";
+        private String slaveExecutedGtidSet = "uuid-master:1-10";
+        private String catchupTargetGtidSet;
 
         static ScriptedDataSource masterDown() {
             ScriptedDataSource dataSource = new ScriptedDataSource();
@@ -264,6 +292,22 @@ public class FailoverTest {
             dataSource.readOnly = false;
             dataSource.superReadOnly = false;
             dataSource.plans.add(ConnectionPlan.invalid());
+            dataSource.plans.add(ConnectionPlan.validOnly());
+            dataSource.plans.add(ConnectionPlan.catchupComplete());
+            dataSource.plans.add(ConnectionPlan.validOnly());
+            dataSource.plans.add(ConnectionPlan.validOnly());
+            dataSource.plans.add(ConnectionPlan.validOnly());
+            return dataSource;
+        }
+
+        static ScriptedDataSource masterNeedsCatchupFromSlave() {
+            ScriptedDataSource dataSource = new ScriptedDataSource();
+            dataSource.readOnly = false;
+            dataSource.superReadOnly = false;
+            dataSource.masterGtidSet = "uuid-master:1-10";
+            dataSource.slaveExecutedGtidSet = "uuid-master:1-10";
+            dataSource.catchupTargetGtidSet = "uuid-master:1-10,uuid-slave-extra:1-2";
+            dataSource.plans.add(ConnectionPlan.validOnly());
             dataSource.plans.add(ConnectionPlan.validOnly());
             dataSource.plans.add(ConnectionPlan.catchupComplete());
             dataSource.plans.add(ConnectionPlan.validOnly());
@@ -293,6 +337,23 @@ public class FailoverTest {
             dataSource.slaveLag = null;
             dataSource.plans.add(ConnectionPlan.replicationBroken());
             dataSource.plans.add(ConnectionPlan.promotionWritable());
+            dataSource.plans.add(ConnectionPlan.validOnly());
+            dataSource.plans.add(ConnectionPlan.validOnly());
+            dataSource.plans.add(ConnectionPlan.validOnly());
+            dataSource.plans.add(ConnectionPlan.validOnly());
+            dataSource.plans.add(ConnectionPlan.validOnly());
+            return dataSource;
+        }
+
+        static ScriptedDataSource slaveContaminatedWithExtraTransactions() {
+            ScriptedDataSource dataSource = new ScriptedDataSource();
+            dataSource.slaveStatusAvailable = true;
+            dataSource.slaveIoRunning = "Yes";
+            dataSource.slaveSqlRunning = "Yes";
+            dataSource.slaveLag = "0";
+            dataSource.masterGtidSet = "uuid-master:1-10,uuid-slave-extra:1-2";
+            dataSource.slaveExecutedGtidSet = "uuid-master:1-10,uuid-slave-extra:1-2";
+            dataSource.plans.add(ConnectionPlan.catchupComplete());
             dataSource.plans.add(ConnectionPlan.validOnly());
             dataSource.plans.add(ConnectionPlan.validOnly());
             dataSource.plans.add(ConnectionPlan.validOnly());
@@ -399,8 +460,12 @@ public class FailoverTest {
                                 return new SlaveStatusResultSet(
                                         dataSource.slaveIoRunning == null ? ioRunning : dataSource.slaveIoRunning,
                                         dataSource.slaveSqlRunning == null ? sqlRunning : dataSource.slaveSqlRunning,
-                                        dataSource.slaveLag == null ? lag : dataSource.slaveLag
+                                        dataSource.slaveLag == null ? lag : dataSource.slaveLag,
+                                        dataSource.slaveExecutedGtidSet
                                 );
+                            }
+                            if ("SHOW MASTER STATUS".equalsIgnoreCase(sql)) {
+                                return new MasterStatusResultSet(dataSource.masterGtidSet);
                             }
                             if (sql.startsWith("SHOW VARIABLES LIKE '")) {
                                 String variableName = sql.substring("SHOW VARIABLES LIKE '".length(), sql.length() - 1);
@@ -435,6 +500,10 @@ public class FailoverTest {
                                 dataSource.slaveIoRunning = "Yes";
                                 dataSource.slaveSqlRunning = "Yes";
                                 dataSource.slaveLag = "0";
+                                if (dataSource.catchupTargetGtidSet != null) {
+                                    dataSource.masterGtidSet = dataSource.catchupTargetGtidSet;
+                                    dataSource.slaveExecutedGtidSet = dataSource.catchupTargetGtidSet;
+                                }
                             } else if ("STOP SLAVE".equalsIgnoreCase(sql) || "RESET SLAVE ALL".equalsIgnoreCase(sql)) {
                                 dataSource.slaveStatusAvailable = false;
                                 dataSource.slaveIoRunning = null;
@@ -554,12 +623,12 @@ public class FailoverTest {
     }
 
     private static class SlaveStatusResultSet extends ResultSetAdapter {
-        private final List<String> columns = Arrays.asList("Slave_IO_Running", "Slave_SQL_Running", "Seconds_Behind_Master");
+        private final List<String> columns = Arrays.asList("Slave_IO_Running", "Slave_SQL_Running", "Seconds_Behind_Master", "Executed_Gtid_Set");
         private final List<String> values;
         private boolean advanced;
 
-        private SlaveStatusResultSet(String ioRunning, String sqlRunning, String lag) {
-            this.values = Arrays.asList(ioRunning, sqlRunning, lag);
+        private SlaveStatusResultSet(String ioRunning, String sqlRunning, String lag, String executedGtidSet) {
+            this.values = Arrays.asList(ioRunning, sqlRunning, lag, executedGtidSet);
         }
 
         @Override
@@ -575,6 +644,32 @@ public class FailoverTest {
         public String getString(String columnLabel) {
             int index = columns.indexOf(columnLabel);
             return index < 0 ? null : values.get(index);
+        }
+    }
+
+    private static class MasterStatusResultSet extends ResultSetAdapter {
+        private final String executedGtidSet;
+        private boolean advanced;
+
+        private MasterStatusResultSet(String executedGtidSet) {
+            this.executedGtidSet = executedGtidSet;
+        }
+
+        @Override
+        public boolean next() {
+            if (advanced) {
+                return false;
+            }
+            advanced = true;
+            return true;
+        }
+
+        @Override
+        public String getString(String columnLabel) {
+            if ("Executed_Gtid_Set".equalsIgnoreCase(columnLabel)) {
+                return executedGtidSet;
+            }
+            return null;
         }
     }
 
@@ -613,7 +708,12 @@ public class FailoverTest {
         @Override public boolean next() throws SQLException { return false; }
         @Override public void close() {}
         @Override public boolean wasNull() { return false; }
+        @Override public SQLWarning getWarnings() { return null; }
+        @Override public void clearWarnings() {}
+        @Override public String getCursorName() { return null; }
         @Override public String getString(String columnLabel) { return null; }
+        @Override public java.math.BigDecimal getBigDecimal(int columnIndex) { return null; }
+        @Override public java.math.BigDecimal getBigDecimal(String columnLabel) { return null; }
         @Override public boolean getBoolean(int columnIndex) { return false; }
         @Override public byte getByte(int columnIndex) { return 0; }
         @Override public short getShort(int columnIndex) { return 0; }
@@ -720,8 +820,80 @@ public class FailoverTest {
         @Override public Object getObject(String columnLabel) { return null; }
         @Override public int getHoldability() { return ResultSet.CLOSE_CURSORS_AT_COMMIT; }
         @Override public boolean isClosed() { return false; }
+        @Override public java.io.Reader getCharacterStream(int columnIndex) { return null; }
+        @Override public java.io.Reader getCharacterStream(String columnLabel) { return null; }
+        @Override public java.io.Reader getNCharacterStream(int columnIndex) { return null; }
+        @Override public java.io.Reader getNCharacterStream(String columnLabel) { return null; }
+        @Override public String getNString(int columnIndex) { return null; }
+        @Override public String getNString(String columnLabel) { return null; }
+        @Override public NClob getNClob(int columnIndex) { return null; }
+        @Override public NClob getNClob(String columnLabel) { return null; }
+        @Override public SQLXML getSQLXML(int columnIndex) { return null; }
+        @Override public SQLXML getSQLXML(String columnLabel) { return null; }
+        @Override public RowId getRowId(int columnIndex) { return null; }
+        @Override public RowId getRowId(String columnLabel) { return null; }
         @Override public void updateNString(int columnIndex, String nString) {}
         @Override public void updateNString(String columnLabel, String nString) {}
+        @Override public void updateNClob(int columnIndex, NClob nClob) {}
+        @Override public void updateNClob(String columnLabel, NClob nClob) {}
+        @Override public void updateNClob(int columnIndex, java.io.Reader reader) {}
+        @Override public void updateNClob(String columnLabel, java.io.Reader reader) {}
+        @Override public void updateNClob(int columnIndex, java.io.Reader reader, long length) {}
+        @Override public void updateNClob(String columnLabel, java.io.Reader reader, long length) {}
+        @Override public void updateClob(int columnIndex, Clob clob) {}
+        @Override public void updateClob(String columnLabel, Clob clob) {}
+        @Override public void updateClob(int columnIndex, java.io.Reader reader) {}
+        @Override public void updateClob(String columnLabel, java.io.Reader reader) {}
+        @Override public void updateClob(int columnIndex, java.io.Reader reader, long length) {}
+        @Override public void updateClob(String columnLabel, java.io.Reader reader, long length) {}
+        @Override public void updateBlob(int columnIndex, Blob blob) {}
+        @Override public void updateBlob(String columnLabel, Blob blob) {}
+        @Override public void updateBlob(int columnIndex, java.io.InputStream inputStream) {}
+        @Override public void updateBlob(String columnLabel, java.io.InputStream inputStream) {}
+        @Override public void updateBlob(int columnIndex, java.io.InputStream inputStream, long length) {}
+        @Override public void updateBlob(String columnLabel, java.io.InputStream inputStream, long length) {}
+        @Override public void updateSQLXML(int columnIndex, SQLXML xmlObject) {}
+        @Override public void updateSQLXML(String columnLabel, SQLXML xmlObject) {}
+        @Override public void updateRowId(int columnIndex, RowId x) {}
+        @Override public void updateRowId(String columnLabel, RowId x) {}
+        @Override public void updateNCharacterStream(int columnIndex, java.io.Reader x) {}
+        @Override public void updateNCharacterStream(String columnLabel, java.io.Reader reader) {}
+        @Override public void updateNCharacterStream(int columnIndex, java.io.Reader x, long length) {}
+        @Override public void updateNCharacterStream(String columnLabel, java.io.Reader reader, long length) {}
+        @Override public void updateAsciiStream(int columnIndex, java.io.InputStream x, long length) {}
+        @Override public void updateAsciiStream(String columnLabel, java.io.InputStream x, long length) {}
+        @Override public void updateBinaryStream(int columnIndex, java.io.InputStream x, long length) {}
+        @Override public void updateBinaryStream(String columnLabel, java.io.InputStream x, long length) {}
+        @Override public void updateCharacterStream(int columnIndex, java.io.Reader x, long length) {}
+        @Override public void updateCharacterStream(String columnLabel, java.io.Reader reader, long length) {}
+        @Override public void updateAsciiStream(int columnIndex, java.io.InputStream x) {}
+        @Override public void updateAsciiStream(String columnLabel, java.io.InputStream x) {}
+        @Override public void updateBinaryStream(int columnIndex, java.io.InputStream x) {}
+        @Override public void updateBinaryStream(String columnLabel, java.io.InputStream x) {}
+        @Override public void updateCharacterStream(int columnIndex, java.io.Reader x) {}
+        @Override public void updateCharacterStream(String columnLabel, java.io.Reader reader) {}
+        @Override public Array getArray(int columnIndex) { return null; }
+        @Override public Array getArray(String columnLabel) { return null; }
+        @Override public Blob getBlob(int columnIndex) { return null; }
+        @Override public Blob getBlob(String columnLabel) { return null; }
+        @Override public Clob getClob(int columnIndex) { return null; }
+        @Override public Clob getClob(String columnLabel) { return null; }
+        @Override public Ref getRef(int columnIndex) { return null; }
+        @Override public Ref getRef(String columnLabel) { return null; }
+        @Override public Object getObject(int columnIndex, Map<String, Class<?>> map) { return null; }
+        @Override public Object getObject(String columnLabel, Map<String, Class<?>> map) { return null; }
+        @Override public void updateArray(int columnIndex, Array x) {}
+        @Override public void updateArray(String columnLabel, Array x) {}
+        @Override public void updateRef(int columnIndex, Ref x) {}
+        @Override public void updateRef(String columnLabel, Ref x) {}
+        @Override public java.sql.Date getDate(int columnIndex, java.util.Calendar cal) { return null; }
+        @Override public java.sql.Date getDate(String columnLabel, java.util.Calendar cal) { return null; }
+        @Override public java.sql.Time getTime(int columnIndex, java.util.Calendar cal) { return null; }
+        @Override public java.sql.Time getTime(String columnLabel, java.util.Calendar cal) { return null; }
+        @Override public java.sql.Timestamp getTimestamp(int columnIndex, java.util.Calendar cal) { return null; }
+        @Override public java.sql.Timestamp getTimestamp(String columnLabel, java.util.Calendar cal) { return null; }
+        @Override public java.net.URL getURL(int columnIndex) { return null; }
+        @Override public java.net.URL getURL(String columnLabel) { return null; }
         @Override public <T> T getObject(int columnIndex, Class<T> type) { return null; }
         @Override public <T> T getObject(String columnLabel, Class<T> type) { return null; }
     }
