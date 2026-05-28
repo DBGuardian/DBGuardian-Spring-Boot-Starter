@@ -21,35 +21,16 @@ spring:
       write-dates-as-timestamps: false
 
   datasource:
-    master:
-      url: jdbc:mysql://192.168.3.150:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-      username: root
-      password: zhuzhou9uu897@
-      driver-class-name: com.mysql.cj.jdbc.Driver
-      hikari:
-        maximum-pool-size: 10
-        minimum-idle: 2
-        connection-timeout: 30000
-        idle-timeout: 600000
-        max-lifetime: 1800000
-    slave:
-      url: jdbc:mysql://192.168.3.151:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-      username: root
-      password: zhuzhou9uu897@
-      driver-class-name: com.mysql.cj.jdbc.Driver
-      hikari:
-        maximum-pool-size: 10
-        minimum-idle: 2
-        connection-timeout: 30000
-        idle-timeout: 600000
-        max-lifetime: 1800000
-    replication:
-      master-host: 192.168.3.150
-      master-port: 3306
-      master-user: repl
-      master-password: zhuzhou9uu897@
-      auto-reconnect: true
-    allow-degraded-startup: true
+    url: jdbc:mysql://192.168.3.150:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: zhuzhou9uu897@
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
 
   redis:
     host: 192.168.3.150
@@ -70,11 +51,39 @@ mybatis:
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
   type-aliases-package: com.dbguardian.test.entity
 
+dbguardian:
+  enabled: true
+  cluster-id: sample-cluster
+  nodes:
+    - id: master-1
+      role: master
+      database-type: mysql
+      jdbc-url: jdbc:mysql://192.168.3.150:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      username: root
+      password: zhuzhou9uu897@
+      weight: 100
+      priority: 100
+      enabled: true
+      tags:
+        - primary
+    - id: slave-1
+      role: slave
+      database-type: mysql
+      jdbc-url: jdbc:mysql://192.168.3.151:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      username: root
+      password: zhuzhou9uu897@
+      master-ref: master-1
+      weight: 100
+      priority: 90
+      enabled: true
+      tags:
+        - readonly
+
 knife4j:
   enable: true
   openapi:
     title: DBGuardian 测试项目API文档
-    description: 用于测试读写分离功能
+    description: 用于测试 Boot2 starter 装配和基础路由能力
     version: 1.0.0
 
 logging:

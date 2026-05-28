@@ -3,40 +3,25 @@ spring:
     name: dbguardian-test
 
   datasource:
-    master:
-      url: jdbc:mysql://192.168.3.47:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-      username: root
-      password: zhuzhou9uu897@
-      driver-class-name: com.mysql.cj.jdbc.Driver
-      hikari:
-        maximum-pool-size: 5
-        minimum-idle: 1
-        connection-timeout: 10000
-        idle-timeout: 300000
-        max-lifetime: 600000
-    slave:
-      url: jdbc:mysql://192.168.3.48:3306/dbguardian_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-      username: root
-      password: zhuzhou9uu897@
-      driver-class-name: com.mysql.cj.jdbc.Driver
-      hikari:
-        maximum-pool-size: 5
-        minimum-idle: 1
-        connection-timeout: 10000
-        idle-timeout: 300000
-        max-lifetime: 600000
-    replication:
-      master-host: 192.168.3.47
-      master-port: 3306
-      master-user: repl
-      master-password: zhuzhou9uu897@
-      auto-reconnect: true
-    allow-degraded-startup: true
+    url: jdbc:h2:mem:dbguardian_test;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+      connection-timeout: 10000
+      idle-timeout: 300000
+      max-lifetime: 600000
+
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/schema.sql
 
   redis:
-    host: 192.168.3.47
+    host: localhost
     port: 6379
-    password: zhuzhou9uu897@
     database: 1
     timeout: 5000ms
     lettuce:
@@ -51,6 +36,34 @@ mybatis:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
   type-aliases-package: com.dbguardian.test.entity
+
+dbguardian:
+  enabled: true
+  cluster-id: test-cluster
+  nodes:
+    - id: master-1
+      role: master
+      database-type: h2
+      jdbc-url: jdbc:h2:mem:dbguardian_test;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE
+      username: sa
+      password:
+      weight: 100
+      priority: 100
+      enabled: true
+      tags:
+        - primary
+    - id: slave-1
+      role: slave
+      database-type: h2
+      jdbc-url: jdbc:h2:mem:dbguardian_test;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE
+      username: sa
+      password:
+      master-ref: master-1
+      weight: 100
+      priority: 90
+      enabled: true
+      tags:
+        - readonly
 
 logging:
   level:

@@ -1,47 +1,42 @@
 # DBGuardian 测试项目 - Java8 / Spring Boot 2.7 / MyBatis
 
-> **技术栈**: `[JAVA8]` `[SPRING_BOOT_27]` `[MYBATIS]` `[MYSQL]`
+> 技术栈: `[JAVA8]` `[SPRING_BOOT_27]` `[MYBATIS]`
 
-这是一个用于测试 DBGuardian 读写分离功能的最小化 Spring Boot 项目。
+这个样例现在用于验证 `dbguardian-boot2-starter` 的接入是否成立，重点不再是旧单体 starter 的直接行为，而是新多模块结构下的装配边界、配置绑定和基础路由决策。
 
-## 技术栈
+## 当前验证范围
 
-| 技术 | 版本 | 说明 |
-|-----|------|------|
-| Java | 8 | JDK |
-| Spring Boot | 2.7.18 | Web 框架 |
-| MyBatis | 2.3.1 | ORM 框架 |
-| MySQL | 8.0 | 数据库 |
-| Redis | 6.x / 7.x | 分布式协调 |
+- Boot2 starter 自动装配可用
+- `dbguardian.*` 配置可绑定为拓扑模型
+- 默认路由策略可根据读/写/事务/强制主库做节点选择
+- 协调服务、故障控制器、健康检查器能被装配
+- 应用自身 MyBatis 数据访问仍可通过测试环境单数据源跑通
 
-## 项目结构
+## 配置分层
 
-```
-dbguardian-test-java8-sb27-mybatis/
-├── pom.xml
-├── README.md
-└── src/
-    ├── main/
-    └── test/
-```
+### 运行态
 
-## 快速开始
+- `src/main/resources/application.yml`
+- 使用应用自己的 `spring.datasource`
+- 同时提供 `dbguardian.nodes` 作为拓扑描述
 
-1. 在主库和从库执行 `src/main/resources/db/schema.sql`。
-2. 编辑 `src/main/resources/application.yml` 和 `src/test/resources/application-test.yml`。
-3. 先在仓库根目录构建 DBGuardian 核心模块。
-4. 进入当前项目执行 `mvn spring-boot:run` 或 `mvn test`。
+### 测试态
 
-## 测试重点
+- `src/test/resources/application-test.yml`
+- 使用 H2 内存库承接 MyBatis 访问
+- 使用 `dbguardian.nodes` 验证 Boot2 starter 的配置绑定和路由链
 
-- 读请求路由到从库
-- 写请求路由到主库
-- 事务内强制主库
-- 主从故障转移
-- Redis 协调状态同步
+## 快速使用
+
+1. 先在仓库根目录执行 `mvn install -DskipTests`
+2. 进入当前项目目录
+3. 执行 `mvn test`
+4. 如果只看 starter 接入是否成立，优先关注：
+   - `DbGuardianBasicTest`
+   - `ReadWriteSplittingTest`
+   - `CoordinationTest`
+   - `FailoverTest`
 
 ## 说明
 
-这个项目保留了和基线项目一致的业务轮廓，但把 ORM 层收缩成原生 MyBatis 接口，便于验证 DBGuardian 与非 Plus 形态的兼容性。
-
-详细规划见 `../doc/测试项目规划.md`。
+这个项目已经从“旧 starter 直连验证”切换为“新 Boot2 starter 接入验证”。
