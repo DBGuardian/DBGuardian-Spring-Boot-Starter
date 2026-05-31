@@ -6,9 +6,12 @@ import io.dbguardian.core.RoutingEngine;
 import io.dbguardian.core.TopologyRegistry;
 import io.dbguardian.core.registry.DataSourceRegistry;
 import io.dbguardian.core.routing.DefaultRoutingPolicy;
+import io.dbguardian.spring.aspect.MyBatisPlusDataSourceAdvisor;
+import io.dbguardian.spring.aspect.MyBatisDataSourceAdvisor;
 import io.dbguardian.spring.coordination.DatasourceCoordinationService;
 import io.dbguardian.spring.failover.DataSourceHealthChecker;
 import io.dbguardian.spring.failover.FailoverController;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -79,5 +82,29 @@ public class DbGuardianBoot3AutoConfiguration {
             DataSourceRegistry dataSourceRegistry,
             FailoverController failoverController) {
         return new DataSourceHealthChecker(dataSourceRegistry, failoverController);
+    }
+
+    /**
+     * MyBatis-Plus Mapper 拦截切面
+     *
+     * <p>仅在 classpath 中存在 MyBatis-Plus 时注册
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "com.baomidou.mybatisplus.core.mapper.BaseMapper")
+    public MyBatisPlusDataSourceAdvisor mybatisPlusDataSourceAdvisor() {
+        return new MyBatisPlusDataSourceAdvisor();
+    }
+
+    /**
+     * MyBatis Mapper 拦截切面
+     *
+     * <p>仅在 classpath 中存在 MyBatis (非 MyBatis-Plus) 时注册
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "org.apache.ibatis.session.SqlSessionFactory")
+    public MyBatisDataSourceAdvisor mybatisDataSourceAdvisor() {
+        return new MyBatisDataSourceAdvisor();
     }
 }

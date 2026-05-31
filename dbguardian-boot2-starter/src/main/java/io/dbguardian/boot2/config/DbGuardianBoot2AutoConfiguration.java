@@ -11,7 +11,8 @@ import io.dbguardian.core.datasource.DataSourceWrapper;
 import io.dbguardian.core.registry.DataSourceRegistry;
 import io.dbguardian.core.routing.DefaultRoutingPolicy;
 import io.dbguardian.spring.DbGuardianRoutingDataSource;
-import io.dbguardian.spring.aspect.DbGuardianDataSourceAspect;
+import io.dbguardian.spring.aspect.MyBatisPlusDataSourceAdvisor;
+import io.dbguardian.spring.aspect.MyBatisDataSourceAdvisor;
 import io.dbguardian.spring.coordination.DatasourceCoordinationService;
 import io.dbguardian.spring.coordination.DatasourceStatusListener;
 import io.dbguardian.spring.failover.DataSourceHealthChecker;
@@ -23,6 +24,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -45,7 +47,8 @@ import java.util.Map;
 @AutoConfigureBefore(name = {
         "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration",
         "org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration",
-        "com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration"
+        "com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration",
+        "org.mybatis.spring.boot.autoconfigure.MybatisAutoConfiguration"
 })
 @EnableConfigurationProperties({DbGuardianProperties.class, SpringDataSourceProperties.class})
 public class DbGuardianBoot2AutoConfiguration {
@@ -203,10 +206,28 @@ public class DbGuardianBoot2AutoConfiguration {
         return container;
     }
 
+    /**
+     * MyBatis-Plus Mapper 拦截切面
+     *
+     * <p>仅在 classpath 中存在 MyBatis-Plus 时注册
+     */
     @Bean
     @ConditionalOnMissingBean
-    public DbGuardianDataSourceAspect dbGuardianDataSourceAspect() {
-        return new DbGuardianDataSourceAspect();
+    @ConditionalOnClass(name = "com.baomidou.mybatisplus.core.mapper.BaseMapper")
+    public MyBatisPlusDataSourceAdvisor mybatisPlusDataSourceAdvisor() {
+        return new MyBatisPlusDataSourceAdvisor();
+    }
+
+    /**
+     * MyBatis Mapper 拦截切面
+     *
+     * <p>仅在 classpath 中存在 MyBatis (非 MyBatis-Plus) 时注册
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "org.apache.ibatis.session.SqlSessionFactory")
+    public MyBatisDataSourceAdvisor mybatisDataSourceAdvisor() {
+        return new MyBatisDataSourceAdvisor();
     }
 
     @Bean

@@ -53,7 +53,9 @@ public class DbGuardianUnitTest {
     public void testRoutingContextDefaults() {
         RoutingContext context = new RoutingContext();
         assertFalse(context.isForceMaster());
-        assertNull(context.getOperation());
+        // operation 默认值为 "write"（安全默认值，走主库）
+        assertEquals("write", context.getOperation());
+        assertEquals("unknown", context.getOrmType());
     }
 
     private List<NodeModel> buildNodes() {

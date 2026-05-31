@@ -5,17 +5,15 @@ import io.dbguardian.core.FailoverOrchestrator;
 import io.dbguardian.core.RoutingEngine;
 import io.dbguardian.core.TopologyRegistry;
 import io.dbguardian.core.registry.DataSourceRegistry;
-import io.dbguardian.model.NodeModel;
 import io.dbguardian.spring.failover.DataSourceHealthChecker;
 import io.dbguardian.spring.failover.FailoverController;
+import lombok.var;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.test.context.ActiveProfiles;
-
-import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -63,11 +61,17 @@ public class DbGuardianBasicTest {
     }
 
     @Test
-    public void testTopologyLoadedFromProperties() {
-        List<NodeModel> nodes = topologyRegistry.getNodes();
-        assertEquals(2, nodes.size(), "测试拓扑应包含 2 个节点");
-        assertEquals("master", nodes.get(0).getRole().toLowerCase());
-        assertEquals("slave", nodes.get(1).getRole().toLowerCase());
+    public void testDataSourceRegistryLoaded() {
+        // 验证数据源注册中心已正确加载主从数据源
+        assertNotNull(dataSourceRegistry, "数据源注册中心不应为空");
+
+        // 验证主库已注册
+        var master = dataSourceRegistry.getMaster("master");
+        assertNotNull(master, "主库应已注册");
+
+        // 验证从库已注册
+        var slave = dataSourceRegistry.getSlave("slave");
+        assertNotNull(slave, "从库应已注册");
     }
 
     @Test
