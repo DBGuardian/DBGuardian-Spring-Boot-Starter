@@ -77,7 +77,7 @@
 
         <dependency>
             <groupId>io.dbguardian</groupId>
-            <artifactId>dbguardian-spring-boot-starter</artifactId>
+            <artifactId>dbguardian-boot2-starter</artifactId>
             <version>${dbguardian.version}</version>
         </dependency>
 

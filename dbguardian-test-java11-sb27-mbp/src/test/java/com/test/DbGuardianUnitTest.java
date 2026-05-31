@@ -1,57 +1,88 @@
-package com.dbguardian.test;
+package com.test;
 
-import io.dbguardian.config.DbGuardianAutoConfiguration;
-import io.dbguardian.enums.DataSourceStatus;
-import io.dbguardian.enums.DataSourceType;
-import io.dbguardian.coordination.DatasourceCoordinationService;
+import io.dbguardian.core.routing.DefaultRoutingPolicy;
+import io.dbguardian.model.NodeModel;
+import io.dbguardian.model.RoutingContext;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * DBGuardian 单元测试（无需 Spring 上下文）
  * 测试核心组件和逻辑
- * 技术栈: [JAVA8] [SPRING_BOOT_27] [MYBATIS_PLUS] [MYSQL]
  */
 public class DbGuardianUnitTest {
 
     /**
-     * TC-001: 测试 DataSourceType 枚举
+     * TC-001: 测试默认路由策略读操作选择从库
      */
     @Test
-    public void testDataSourceTypeEnum() {
-        DataSourceType[] types = DataSourceType.values();
-        assertTrue(types.length >= 2, "应该有 MASTER 和 SLAVE 两种类型");
-        assertEquals(DataSourceType.MASTER, DataSourceType.valueOf("MASTER"));
-        assertEquals(DataSourceType.SLAVE, DataSourceType.valueOf("SLAVE"));
+    public void testDefaultRoutingPolicyReadPrefersSlave() {
+        DefaultRoutingPolicy policy = new DefaultRoutingPolicy();
+        List<NodeModel> nodes = buildNodes();
+        RoutingContext context = new RoutingContext();
+        context.setOperation("read");
+
+        NodeModel selected = policy.select(nodes, context);
+        assertNotNull(selected);
+        assertEquals("slave", selected.getRole().toLowerCase());
     }
 
     /**
-     * TC-002: 测试 DataSourceStatus 枚举
+     * TC-002: 测试默认路由策略写操作选择主库
      */
     @Test
-    public void testDataSourceStatusEnum() {
-        DataSourceStatus[] statuses = DataSourceStatus.values();
-        assertTrue(statuses.length >= 3, "应该有至少 3 种状态");
+    public void testDefaultRoutingPolicyWritePrefersMaster() {
+        DefaultRoutingPolicy policy = new DefaultRoutingPolicy();
+        List<NodeModel> nodes = buildNodes();
+        RoutingContext context = new RoutingContext();
+        context.setOperation("write");
 
-        // 验证常见状态存在
-        assertNotNull(DataSourceStatus.MASTER_ACTIVE);
-        assertNotNull(DataSourceStatus.SLAVE_PROMOTED);
-        assertNotNull(DataSourceStatus.DEGRADED);
+        NodeModel selected = policy.select(nodes, context);
+        assertNotNull(selected);
+        assertEquals("master", selected.getRole().toLowerCase());
     }
 
     /**
-     * TC-003: 测试读写方法判断逻辑
+     * TC-003: 测试强制主库优先级
+     */
+    @Test
+    public void testForceMasterWins() {
+        DefaultRoutingPolicy policy = new DefaultRoutingPolicy();
+        List<NodeModel> nodes = buildNodes();
+        RoutingContext context = new RoutingContext();
+        context.setOperation("read");
+        context.setForceMaster(true);
+
+        NodeModel selected = policy.select(nodes, context);
+        assertNotNull(selected);
+        assertEquals("master", selected.getRole().toLowerCase());
+    }
+
+    /**
+     * TC-004: 测试路由上下文默认值
+     */
+    @Test
+    public void testRoutingContextDefaults() {
+        RoutingContext context = new RoutingContext();
+        assertFalse(context.isForceMaster());
+        assertEquals("write", context.getOperation());
+        assertEquals("unknown", context.getOrmType());
+    }
+
+    /**
+     * TC-005: 测试读写方法判断逻辑
      */
     @Test
     public void testReadMethodDetection() {
-        // 测试读方法前缀
         String[] readPrefixes = {"select", "get", "query", "find", "count", "list", "page", "search"};
         for (String prefix : readPrefixes) {
             assertTrue(isReadMethod(prefix + "Test"), prefix + "* 应该被识别为读方法");
         }
 
-        // 测试写方法前缀
         String[] writePrefixes = {"insert", "save", "update", "delete", "remove", "add", "create", "modify"};
         for (String prefix : writePrefixes) {
             assertFalse(isReadMethod(prefix + "Test"), prefix + "* 应该被识别为写方法");
@@ -59,24 +90,19 @@ public class DbGuardianUnitTest {
     }
 
     /**
-     * TC-004: 测试特殊情况
+     * TC-006: 测试特殊情况
      */
     @Test
     public void testSpecialCases() {
-        // selectOne 应该被识别为读方法
         assertTrue(isReadMethod("selectOne"));
-        // selectById 应该被识别为读方法
         assertTrue(isReadMethod("selectById"));
-        // getOne 应该被识别为读方法
         assertTrue(isReadMethod("getOne"));
-        // saveOrUpdate 应该被识别为写方法
         assertFalse(isReadMethod("saveOrUpdate"));
-        // deleteById 应该被识别为写方法
         assertFalse(isReadMethod("deleteById"));
     }
 
     /**
-     * TC-005: 测试字符串大小写不敏感
+     * TC-007: 测试字符串大小写不敏感
      */
     @Test
     public void testCaseInsensitive() {
@@ -87,18 +113,17 @@ public class DbGuardianUnitTest {
     }
 
     /**
-     * TC-006: 测试不匹配的方法名
+     * TC-008: 测试不匹配的方法名
      */
     @Test
     public void testNonMatchingMethods() {
-        // 非 select/get/query/find/count/list/page/search 开头的方法应返回 false
         assertFalse(isReadMethod("execute"));
         assertFalse(isReadMethod("process"));
         assertFalse(isReadMethod("handle"));
     }
 
     /**
-     * 辅助方法：判断是否为读方法（与 DbGuardianDataSourceAspect 逻辑一致）
+     * 辅助方法：判断是否为读方法
      */
     private boolean isReadMethod(String methodName) {
         String[] readPrefixes = {"select", "get", "query", "find", "count", "list", "page", "search"};
@@ -111,12 +136,23 @@ public class DbGuardianUnitTest {
         return false;
     }
 
-    /**
-     * TC-007: 测试协调服务常量
-     */
-    @Test
-    public void testCoordinationConstants() {
-        assertEquals("NORMAL", DatasourceCoordinationService.STATUS_NORMAL);
-        assertEquals("SLAVE_PROMOTED", DatasourceCoordinationService.STATUS_SLAVE_PROMOTED);
+    private List<NodeModel> buildNodes() {
+        List<NodeModel> nodes = new ArrayList<>();
+
+        NodeModel master = new NodeModel();
+        master.setId("master-1");
+        master.setRole("master");
+        master.setWeight(100);
+        master.setEnabled(true);
+        nodes.add(master);
+
+        NodeModel slave = new NodeModel();
+        slave.setId("slave-1");
+        slave.setRole("slave");
+        slave.setWeight(100);
+        slave.setEnabled(true);
+        nodes.add(slave);
+
+        return nodes;
     }
 }

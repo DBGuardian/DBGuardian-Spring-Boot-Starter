@@ -1,31 +1,50 @@
-package com.dbguardian.test;
+package com.test;
 
-import io.dbguardian.config.DbGuardianAutoConfiguration;
-import io.dbguardian.enums.DataSourceStatus;
-import io.dbguardian.coordination.DatasourceCoordinationService;
+import com.test.Application;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
+import org.springframework.test.context.ActiveProfiles;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * DBGuardian 基础功能测试
- * 技术栈: [JAVA8] [SPRING_BOOT_27] [MYBATIS_PLUS] [MYSQL]
  */
-@SpringBootTest(classes = {Application.class, DbGuardianAutoConfiguration.class})
+@SpringBootTest(classes = Application.class)
 @ActiveProfiles("test")
 public class DbGuardianBasicTest {
 
+    @Autowired
+    private ApplicationContext applicationContext;
+
     @Autowired(required = false)
-    private DatasourceCoordinationService coordinationService;
+    @Qualifier("datasourceCoordinationService")
+    private Object coordinationService;
 
     /**
      * 测试应用上下文加载成功
      */
     @Test
     public void testApplicationContextLoaded() {
+        assertNotNull(applicationContext);
+    }
+
+    /**
+     * 测试协调服务 bean 存在
+     */
+    @Test
+    public void testCoordinationServiceBeanPresent() {
+        assertTrue(applicationContext.containsBean("datasourceCoordinationService"));
+    }
+
+    /**
+     * 测试协调服务可注入
+     */
+    @Test
+    public void testCoordinationServiceInjectable() {
         assertNotNull(coordinationService, "协调服务应该被注入");
     }
 
@@ -35,9 +54,14 @@ public class DbGuardianBasicTest {
     @Test
     public void testInstanceIdGenerated() {
         if (coordinationService != null) {
-            String instanceId = coordinationService.getInstanceId();
-            assertNotNull(instanceId, "实例ID不应为空");
-            assertFalse(instanceId.isEmpty(), "实例ID不应为空字符串");
+            try {
+                java.lang.reflect.Method method = coordinationService.getClass().getMethod("getInstanceId");
+                Object instanceId = method.invoke(coordinationService);
+                assertNotNull(instanceId, "实例ID不应为空");
+                assertFalse(instanceId.toString().isEmpty(), "实例ID不应为空字符串");
+            } catch (Exception e) {
+                fail("获取实例ID失败: " + e.getMessage());
+            }
         }
     }
 
@@ -47,9 +71,16 @@ public class DbGuardianBasicTest {
     @Test
     public void testCoordinationServiceHealth() {
         if (coordinationService != null) {
-            boolean healthy = coordinationService.isHealthy();
-            // Redis 可能不可用，所以不强制要求健康
-            assertNotNull(coordinationService.getCoordinationStatus(), "协调状态不应为空");
+            try {
+                java.lang.reflect.Method method = coordinationService.getClass().getMethod("isHealthy");
+                method.invoke(coordinationService);
+                // Redis 可能不可用，所以不强制要求健康
+                java.lang.reflect.Method statusMethod = coordinationService.getClass().getMethod("getCoordinationStatus");
+                Object status = statusMethod.invoke(coordinationService);
+                assertNotNull(status, "协调状态不应为空");
+            } catch (Exception e) {
+                fail("获取协调状态失败: " + e.getMessage());
+            }
         }
     }
 
@@ -59,9 +90,16 @@ public class DbGuardianBasicTest {
     @Test
     public void testCoordinationStatus() {
         if (coordinationService != null) {
-            DatasourceCoordinationService.CoordinationStatus status = coordinationService.getCoordinationStatus();
-            assertNotNull(status, "协调状态不应为空");
-            assertNotNull(status.getInstanceId(), "实例ID不应为空");
+            try {
+                java.lang.reflect.Method method = coordinationService.getClass().getMethod("getCoordinationStatus");
+                Object status = method.invoke(coordinationService);
+                assertNotNull(status, "协调状态不应为空");
+
+                java.lang.reflect.Method getInstanceId = status.getClass().getMethod("getInstanceId");
+                assertNotNull(getInstanceId.invoke(status), "实例ID不应为空");
+            } catch (Exception e) {
+                fail("测试协调状态失败: " + e.getMessage());
+            }
         }
     }
 }

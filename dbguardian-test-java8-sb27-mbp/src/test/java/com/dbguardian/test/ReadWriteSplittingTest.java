@@ -1,6 +1,5 @@
 package com.dbguardian.test;
 
-import com.dbguardian.test.entity.User;
 import com.dbguardian.test.mapper.UserMapper;
 import io.dbguardian.boot2.config.DbGuardianBoot2AutoConfiguration;
 import io.dbguardian.model.RoutingContext;

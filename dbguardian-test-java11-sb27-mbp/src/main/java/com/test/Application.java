@@ -1,4 +1,4 @@
-package com.dbguardian.test;
+package com.test;
 
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
@@ -8,14 +8,12 @@ import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerA
 
 /**
  * DBGuardian 测试项目 - Java11 + Spring Boot 2.7 + MyBatis-Plus
- *
- * 技术栈: [JAVA11] [SPRING_BOOT_27] [MYBATIS_PLUS] [MYSQL]
  */
 @SpringBootApplication(exclude = {
     DataSourceAutoConfiguration.class,
     DataSourceTransactionManagerAutoConfiguration.class
 })
-@MapperScan("com.dbguardian.test.mapper")
+@MapperScan("com.test.mapper")
 public class Application {
 
     public static void main(String[] args) {

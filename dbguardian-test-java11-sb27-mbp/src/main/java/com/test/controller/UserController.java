@@ -1,7 +1,7 @@
-package com.dbguardian.test.controller;
+package com.test.controller;
 
-import com.dbguardian.test.entity.User;
-import com.dbguardian.test.service.UserService;
+import com.test.entity.User;
+import com.test.service.UserService;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,8 +13,6 @@ import java.util.Map;
 
 /**
  * 用户控制器 - 用于测试读写分离
- *
- * 技术栈: [JAVA8] [SPRING_BOOT_27] [MYBATIS_PLUS] [MYSQL]
  */
 @Api(tags = "用户管理 - 读写分离测试")
 @RestController

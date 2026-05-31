@@ -1,13 +1,13 @@
-package com.dbguardian.test;
+package com.test;
 
-import io.dbguardian.config.DbGuardianAutoConfiguration;
+import io.dbguardian.model.RoutingContext;
+import io.dbguardian.spring.RoutingContextHolder;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * DataSourceContextHolder 单元测试
- * 技术栈: [JAVA8] [SPRING_BOOT_27] [MYBATIS_PLUS] [MYSQL]
  */
 public class DataSourceContextHolderTest {
 
@@ -17,21 +17,25 @@ public class DataSourceContextHolderTest {
     @Test
     public void testContextSwitch() {
         // 测试初始状态为 null
-        assertNull(DbGuardianAutoConfiguration.DataSourceContextHolder.get());
+        assertNull(RoutingContextHolder.get());
 
-        // 切换到主库
-        DbGuardianAutoConfiguration.DataSourceContextHolder.useMaster();
-        assertEquals(io.dbguardian.enums.DataSourceType.MASTER,
-                     DbGuardianAutoConfiguration.DataSourceContextHolder.get());
+        // 切换到读上下文
+        RoutingContext readContext = new RoutingContext();
+        readContext.setOperation("read");
+        RoutingContextHolder.set(readContext);
+        assertNotNull(RoutingContextHolder.get());
+        assertEquals("read", RoutingContextHolder.get().getOperation());
 
-        // 切换到从库
-        DbGuardianAutoConfiguration.DataSourceContextHolder.useSlave();
-        assertEquals(io.dbguardian.enums.DataSourceType.SLAVE,
-                     DbGuardianAutoConfiguration.DataSourceContextHolder.get());
+        // 切换到写上下文
+        RoutingContext writeContext = new RoutingContext();
+        writeContext.setOperation("write");
+        RoutingContextHolder.set(writeContext);
+        assertNotNull(RoutingContextHolder.get());
+        assertEquals("write", RoutingContextHolder.get().getOperation());
 
         // 清除上下文
-        DbGuardianAutoConfiguration.DataSourceContextHolder.clear();
-        assertNull(DbGuardianAutoConfiguration.DataSourceContextHolder.get());
+        RoutingContextHolder.clear();
+        assertNull(RoutingContextHolder.get());
     }
 
     /**
@@ -39,43 +43,68 @@ public class DataSourceContextHolderTest {
      */
     @Test
     public void testThreadIsolation() throws InterruptedException {
-        // 主线程设置为主库
-        DbGuardianAutoConfiguration.DataSourceContextHolder.useMaster();
+        // 主线程设置为读上下文
+        RoutingContext readContext = new RoutingContext();
+        readContext.setOperation("read");
+        RoutingContextHolder.set(readContext);
 
         // 新线程应该是独立的
         Thread newThread = new Thread(() -> {
-            assertNull(DbGuardianAutoConfiguration.DataSourceContextHolder.get(),
-                       "新线程应该有独立的上下文");
-            DbGuardianAutoConfiguration.DataSourceContextHolder.useSlave();
-            assertEquals(io.dbguardian.enums.DataSourceType.SLAVE,
-                         DbGuardianAutoConfiguration.DataSourceContextHolder.get());
+            assertNull(RoutingContextHolder.get(), "新线程应该有独立的上下文");
+            RoutingContext newContext = new RoutingContext();
+            newContext.setOperation("read");
+            RoutingContextHolder.set(newContext);
+            assertNotNull(RoutingContextHolder.get());
+            assertEquals("read", RoutingContextHolder.get().getOperation());
+            RoutingContextHolder.clear();
         });
 
         newThread.start();
         newThread.join();
 
         // 主线程状态不受影响
-        assertEquals(io.dbguardian.enums.DataSourceType.MASTER,
-                     DbGuardianAutoConfiguration.DataSourceContextHolder.get());
+        assertEquals("read", RoutingContextHolder.get().getOperation());
 
         // 清理
-        DbGuardianAutoConfiguration.DataSourceContextHolder.clear();
+        RoutingContextHolder.clear();
     }
 
     /**
-     * TC-003: 测试 set 方法
+     * TC-003: 测试 forceMaster 设置
      */
     @Test
-    public void testSetMethod() {
-        DbGuardianAutoConfiguration.DataSourceContextHolder.set(io.dbguardian.enums.DataSourceType.MASTER);
-        assertEquals(io.dbguardian.enums.DataSourceType.MASTER,
-                     DbGuardianAutoConfiguration.DataSourceContextHolder.get());
-
-        DbGuardianAutoConfiguration.DataSourceContextHolder.set(io.dbguardian.enums.DataSourceType.SLAVE);
-        assertEquals(io.dbguardian.enums.DataSourceType.SLAVE,
-                     DbGuardianAutoConfiguration.DataSourceContextHolder.get());
+    public void testForceMaster() {
+        RoutingContext context = new RoutingContext();
+        context.setOperation("read");
+        context.setForceMaster(true);
+        RoutingContextHolder.set(context);
+        assertNotNull(RoutingContextHolder.get());
+        assertTrue(RoutingContextHolder.get().isForceMaster());
+        assertEquals("read", RoutingContextHolder.get().getOperation());
 
         // 清理
-        DbGuardianAutoConfiguration.DataSourceContextHolder.clear();
+        RoutingContextHolder.clear();
+    }
+
+    /**
+     * TC-004: 测试读写操作区分
+     */
+    @Test
+    public void testReadWriteOperations() {
+        // 测试读操作
+        RoutingContext readContext = new RoutingContext();
+        readContext.setOperation("read");
+        RoutingContextHolder.set(readContext);
+        assertEquals("read", RoutingContextHolder.get().getOperation());
+        assertFalse(RoutingContextHolder.get().isForceMaster());
+
+        // 测试写操作
+        RoutingContext writeContext = new RoutingContext();
+        writeContext.setOperation("write");
+        RoutingContextHolder.set(writeContext);
+        assertEquals("write", RoutingContextHolder.get().getOperation());
+
+        // 清理
+        RoutingContextHolder.clear();
     }
 }

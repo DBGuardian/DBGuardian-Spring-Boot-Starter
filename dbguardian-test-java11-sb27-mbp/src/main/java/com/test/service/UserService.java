@@ -1,14 +1,12 @@
-package com.dbguardian.test.service;
+package com.test.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
-import com.dbguardian.test.entity.User;
+import com.test.entity.User;
 
 import java.util.List;
 
 /**
  * 用户服务接口
- *
- * 技术栈: [JAVA8] [SPRING_BOOT_27] [MYBATIS_PLUS] [MYSQL]
  */
 public interface UserService extends IService<User> {
 
