@@ -9,10 +9,30 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "spring.datasource")
 public class SpringDataSourceProperties {
 
+    private boolean enabled = true;
+    private boolean allowDegradedStartup = true;
     private NodeProperties master = new NodeProperties();
     private NodeProperties slave = new NodeProperties();
     private ReplicationProperties replication = new ReplicationProperties();
+    private RuntimeProperties runtime = new RuntimeProperties();
     private RecoveryProperties recovery = new RecoveryProperties();
+    private GtidProtectionProperties gtidProtection = new GtidProtectionProperties();
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
+
+    public boolean isAllowDegradedStartup() {
+        return allowDegradedStartup;
+    }
+
+    public void setAllowDegradedStartup(boolean allowDegradedStartup) {
+        this.allowDegradedStartup = allowDegradedStartup;
+    }
 
     public NodeProperties getMaster() {
         return master;
@@ -44,6 +64,14 @@ public class SpringDataSourceProperties {
 
     public void setRecovery(RecoveryProperties recovery) {
         this.recovery = recovery;
+    }
+
+    public RuntimeProperties getRuntime() {
+        return runtime;
+    }
+
+    public GtidProtectionProperties getGtidProtection() {
+        return gtidProtection;
     }
 
     public static class NodeProperties {
@@ -200,8 +228,26 @@ public class SpringDataSourceProperties {
     }
 
     public static class RecoveryProperties {
+        private boolean enabled = true;
+        private boolean autoFailback = true;
         private int catchupTimeoutSeconds = 300;
-        private int catchupCheckIntervalSeconds = 10;
+        private int catchupCheckIntervalSeconds = 2;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public boolean isAutoFailback() {
+            return autoFailback;
+        }
+
+        public void setAutoFailback(boolean autoFailback) {
+            this.autoFailback = autoFailback;
+        }
 
         public int getCatchupTimeoutSeconds() {
             return catchupTimeoutSeconds;
@@ -217,6 +263,75 @@ public class SpringDataSourceProperties {
 
         public void setCatchupCheckIntervalSeconds(int catchupCheckIntervalSeconds) {
             this.catchupCheckIntervalSeconds = catchupCheckIntervalSeconds;
+        }
+    }
+
+    public static class RuntimeProperties {
+        private int masterCheckIntervalSeconds = 30;
+        private int slaveCheckIntervalSeconds = 5;
+        private long orchestrationIntervalMs = 30000L;
+        private boolean periodicHealthCheckEnabled = true;
+
+        public int getMasterCheckIntervalSeconds() {
+            return masterCheckIntervalSeconds;
+        }
+
+        public void setMasterCheckIntervalSeconds(int masterCheckIntervalSeconds) {
+            this.masterCheckIntervalSeconds = masterCheckIntervalSeconds;
+        }
+
+        public int getSlaveCheckIntervalSeconds() {
+            return slaveCheckIntervalSeconds;
+        }
+
+        public void setSlaveCheckIntervalSeconds(int slaveCheckIntervalSeconds) {
+            this.slaveCheckIntervalSeconds = slaveCheckIntervalSeconds;
+        }
+
+        public long getOrchestrationIntervalMs() {
+            return orchestrationIntervalMs;
+        }
+
+        public void setOrchestrationIntervalMs(long orchestrationIntervalMs) {
+            this.orchestrationIntervalMs = orchestrationIntervalMs;
+        }
+
+        public boolean isPeriodicHealthCheckEnabled() {
+            return periodicHealthCheckEnabled;
+        }
+
+        public void setPeriodicHealthCheckEnabled(boolean periodicHealthCheckEnabled) {
+            this.periodicHealthCheckEnabled = periodicHealthCheckEnabled;
+        }
+    }
+
+    public static class GtidProtectionProperties {
+        private boolean enabled;
+        private boolean blockSlaveReadsOnRisk = true;
+        private long maxAllowedLagSeconds;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public boolean isBlockSlaveReadsOnRisk() {
+            return blockSlaveReadsOnRisk;
+        }
+
+        public void setBlockSlaveReadsOnRisk(boolean blockSlaveReadsOnRisk) {
+            this.blockSlaveReadsOnRisk = blockSlaveReadsOnRisk;
+        }
+
+        public long getMaxAllowedLagSeconds() {
+            return maxAllowedLagSeconds;
+        }
+
+        public void setMaxAllowedLagSeconds(long maxAllowedLagSeconds) {
+            this.maxAllowedLagSeconds = maxAllowedLagSeconds;
         }
     }
 }

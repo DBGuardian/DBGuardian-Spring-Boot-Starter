@@ -53,19 +53,20 @@ spring:
     # 降级启动配置
     allow-degraded-startup: true
 
-  # Redis配置（用于协调服务）
-  redis:
-    host: 192.168.3.150
-    port: 6379
-    password: zhuzhou9uu897@
-    database: 0
-    timeout: 10000ms
-    lettuce:
-      pool:
-        max-active: 20
-        max-wait: 3000ms
-        max-idle: 5
-        min-idle: 1
+  # Redis配置（用于协调服务）- Spring Boot 3 使用 spring.data.redis 前缀
+  data:
+    redis:
+      host: 192.168.3.150
+      port: 6379
+      password: zhuzhou9uu897@
+      database: 0
+      timeout: 10000ms
+      lettuce:
+        pool:
+          max-active: 20
+          max-wait: 3000ms
+          max-idle: 5
+          min-idle: 1
 
 # MyBatis-Plus配置
 mybatis-plus:
