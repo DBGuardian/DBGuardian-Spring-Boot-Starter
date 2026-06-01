@@ -90,8 +90,6 @@ public class DbGuardianRuntimeOrchestrator {
             return;
         }
         dataSourceHealthChecker.triggerHealthCheck();
-        refreshRuntimeState("periodic_orchestration");
-        ensureCoordinationInitializedAndSync();
     }
 
     private void refreshRuntimeState(String reason) {

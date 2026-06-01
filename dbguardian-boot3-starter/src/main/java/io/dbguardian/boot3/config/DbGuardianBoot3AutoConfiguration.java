@@ -283,6 +283,7 @@ public class DbGuardianBoot3AutoConfiguration {
         checker.setGtidProtectionEnabled(properties.getGtidProtection().isEnabled());
         checker.setBlockSlaveReadsOnRisk(properties.getGtidProtection().isBlockSlaveReadsOnRisk());
         gtidConsistencyInspector.setMaxAllowedLagSeconds(properties.getGtidProtection().getMaxAllowedLagSeconds());
+        checker.startHealthChecks();
         return checker;
     }
 
