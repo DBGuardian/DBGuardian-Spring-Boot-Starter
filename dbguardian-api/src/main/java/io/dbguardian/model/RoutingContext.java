@@ -1,5 +1,8 @@
 package io.dbguardian.model;
 
+import java.util.HashSet;
+import java.util.Set;
+
 public class RoutingContext {
 
     private String operation = "write";
@@ -8,6 +11,7 @@ public class RoutingContext {
     private boolean readOnlyTransaction;
     private String shardKey;
     private String ormType = "unknown";
+    private Set<String> tags = new HashSet<>();
 
     public String getOperation() {
         return operation;
@@ -55,5 +59,25 @@ public class RoutingContext {
 
     public void setOrmType(String ormType) {
         this.ormType = ormType;
+    }
+
+    public Set<String> getTags() {
+        return tags;
+    }
+
+    public void setTags(Set<String> tags) {
+        this.tags = tags;
+    }
+
+    public void addTag(String tag) {
+        this.tags.add(tag);
+    }
+
+    public void removeTag(String tag) {
+        this.tags.remove(tag);
+    }
+
+    public boolean hasTag(String tag) {
+        return this.tags.contains(tag);
     }
 }
