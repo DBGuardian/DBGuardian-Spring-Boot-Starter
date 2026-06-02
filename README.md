@@ -1,4 +1,14 @@
-# DBGuardian Spring Boot Starter
+<div align="center">
+  <img src="https://github.com/DBGuardian/DBGuardian-doc/blob/main/logo.png?raw=true" alt="DBGuardian Logo" width="220" />
+
+  # DBGuardian Spring Boot Starter
+
+  ![开发中](https://img.shields.io/badge/status-%E5%BC%80%E5%8F%91%E4%B8%AD-orange)
+  ![GitHub stars](https://img.shields.io/github/stars/DBGuardian/DBGuardian?style=flat-square)
+  ![GitHub forks](https://img.shields.io/github/forks/DBGuardian/DBGuardian?style=flat-square)
+  ![GitHub issues](https://img.shields.io/github/issues/DBGuardian/DBGuardian?style=flat-square)
+  ![GitHub license](https://img.shields.io/github/license/DBGuardian/DBGuardian?style=flat-square)
+</div>
 
 Spring Boot 数据库高可用 Starter - 读写分离 + 自动故障转移
 
@@ -29,6 +39,10 @@ Spring Boot 数据库高可用 Starter - 读写分离 + 自动故障转移
 spring:
   application:
     name: your-app-name
+
+  # 允许循环依赖（DBGuardian 与 MyBatis-Plus 的数据源配置循环）
+  main:
+    allow-circular-references: true
 
   # 主库数据源配置
   datasource:
@@ -113,6 +127,10 @@ spring:
   application:
     name: your-app-name
 
+  # 允许循环依赖（DBGuardian 与 MyBatis-Plus 的数据源配置循环）
+  main:
+    allow-circular-references: true
+
   datasource:
     # 允许降级启动
     allow-degraded-startup: true
@@ -150,6 +168,9 @@ spring:
       master-user: repl
       master-password: repl_password
       auto-reconnect: true
+
+    # 允许降级启动（数据库不可用时）
+    allow-degraded-startup: true
 
   # Redis配置（分布式协调）
   redis:
@@ -265,3 +286,11 @@ spring:
 ## License
 
 MIT
+
+## 捐助
+
+如果这个项目对你有帮助，欢迎支持持续开发。
+
+<div align="center">
+  <img src="https://github.com/DBGuardian/DBGuardian-doc/blob/main/1780427856871.jpg?raw=true" alt="捐助二维码" width="360" />
+</div>
