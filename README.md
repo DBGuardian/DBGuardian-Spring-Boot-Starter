@@ -28,7 +28,7 @@ Spring Boot 数据库高可用 Starter - 读写分离 + 自动故障转移
 ```xml
 <dependency>
     <groupId>io.dbguardian</groupId>
-    <artifactId>dbguardian-spring-boot-starter</artifactId>
+    <artifactId>dbguardian-boot2-starter</artifactId>
     <version>1.0.0</version>
 </dependency>
 ```
