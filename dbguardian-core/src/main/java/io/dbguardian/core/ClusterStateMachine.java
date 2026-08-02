@@ -65,6 +65,22 @@ public class ClusterStateMachine {
         return state;
     }
 
+    public synchronized ClusterRuntimeState markSlaveReadsFallbackToMaster(String masterNodeId, String reason) {
+        ClusterRuntimeState state = current();
+        state.setStatus(ClusterStatus.MASTER_ACTIVE);
+        state.setRecoveryInProgress(false);
+        state.setActiveMasterId(masterNodeId);
+        state.setActiveReadNodeId(masterNodeId);
+        state.setSlaveReadsBlocked(true);
+        state.setLastReason(reason);
+        updateNodeRoles(state, masterNodeId, masterNodeId, false);
+        return state;
+    }
+
+    public synchronized ClusterRuntimeState restoreSlaveReads(String masterNodeId, String slaveNodeId, String reason) {
+        return markMasterActive(masterNodeId, slaveNodeId, reason);
+    }
+
     public synchronized ClusterRuntimeState moveToRecoveryStage(ClusterStatus status,
                                                                 String sourceNodeId,
                                                                 String targetNodeId,

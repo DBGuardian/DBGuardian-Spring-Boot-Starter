@@ -43,6 +43,14 @@ public class ClusterRuntimeStateManager {
         stateMachine.markDegraded(reason);
     }
 
+    public synchronized void markSlaveReadsFallbackToMaster(String masterNodeId, String reason) {
+        stateMachine.markSlaveReadsFallbackToMaster(masterNodeId, reason);
+    }
+
+    public synchronized void restoreSlaveReads(String masterNodeId, String slaveNodeId, String reason) {
+        stateMachine.restoreSlaveReads(masterNodeId, slaveNodeId, reason);
+    }
+
     public synchronized void moveToRecoveryStage(ClusterStatus status,
                                                  String sourceNodeId,
                                                  String targetNodeId,

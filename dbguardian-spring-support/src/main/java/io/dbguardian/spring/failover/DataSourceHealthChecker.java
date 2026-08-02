@@ -3,6 +3,7 @@ package io.dbguardian.spring.failover;
 import io.dbguardian.core.GtidConsistencyInspector;
 import io.dbguardian.core.datasource.DataSourceWrapper;
 import io.dbguardian.core.registry.DataSourceRegistry;
+import io.dbguardian.spi.DatabaseDialect;
 import io.dbguardian.runtime.ClusterRuntimeState;
 import io.dbguardian.runtime.ClusterStatus;
 import io.dbguardian.spring.runtime.ClusterRuntimeStateManager;
@@ -17,6 +18,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -117,8 +119,15 @@ public class DataSourceHealthChecker {
             boolean promotedActiveMaster = isPromotedActiveMaster(slave.getId());
             boolean healthy = isHealthy(slave);
             boolean replicationHealthy = promotedActiveMaster || checkReplicationHealthy(slave);
-            long lag = promotedActiveMaster ? 0L : getReplicationLagSeconds(slave);
             boolean wasAvailable = registry.getAvailableSlaves().stream().anyMatch(item -> item.getId().equals(slave.getId()));
+            if (shouldRecoverSlaveReplication(slave, healthy, replicationHealthy, promotedActiveMaster, wasAvailable)) {
+                boolean rebuilt = failoverController.recoverSlaveReplication(slave.getId());
+                if (rebuilt) {
+                    // The next scheduled observation is the admission gate for read traffic.
+                    replicationHealthy = false;
+                }
+            }
+            long lag = promotedActiveMaster ? 0L : getReplicationLagSeconds(slave);
             boolean promotionCandidate = shouldKeepSlaveAvailableForPromotion(healthy, replicationHealthy);
             if (healthy && (replicationHealthy || promotionCandidate)) {
                 slave.healthCheckSuccess();
@@ -230,6 +239,22 @@ public class DataSourceHealthChecker {
                 || registry.getAvailableMasterCount() == 0;
     }
 
+    private boolean shouldRecoverSlaveReplication(DataSourceWrapper slave,
+                                                  boolean healthy,
+                                                  boolean replicationHealthy,
+                                                  boolean promotedActiveMaster,
+                                                  boolean wasAvailable) {
+        if (!healthy || replicationHealthy || promotedActiveMaster || wasAvailable || slave == null) {
+            return false;
+        }
+        DatabaseDialect dialect = resolveDialect(slave);
+        if (dialect == null || dialect.getDatabaseType() == null || registry.getAvailableMasterCount() == 0) {
+            return false;
+        }
+        String databaseType = dialect.getDatabaseType();
+        return "mysql".equalsIgnoreCase(databaseType) || "postgresql".equalsIgnoreCase(databaseType);
+    }
+
     private boolean isPromotedActiveMaster(String slaveNodeId) {
         if (runtimeStateManager == null || slaveNodeId == null) {
             return false;
@@ -239,7 +264,8 @@ public class DataSourceHealthChecker {
             return false;
         }
         return slaveNodeId.equals(state.getActiveMasterId())
-                && ClusterStatus.SLAVE_PROMOTED.equals(state.getStatus());
+                && (ClusterStatus.SLAVE_PROMOTED.equals(state.getStatus())
+                || state.getStatus() != null && state.getStatus().isRecoveryStage());
     }
 
     private boolean isHealthy(DataSourceWrapper dataSourceWrapper) {
@@ -256,30 +282,47 @@ public class DataSourceHealthChecker {
     }
 
     private boolean checkReplicationHealthy(DataSourceWrapper slave) {
+        DatabaseDialect dialect = resolveDialect(slave);
+        if (dialect == null || dialect.getShowReplicaStatusSql() == null) {
+            return true;
+        }
         try (Connection connection = slave.getDataSource().getConnection();
              Statement statement = connection.createStatement();
-             ResultSet rs = statement.executeQuery("SHOW SLAVE STATUS")) {
+             ResultSet rs = statement.executeQuery(dialect.getShowReplicaStatusSql())) {
             if (!rs.next()) {
                 return true;
             }
-            String ioRunning = rs.getString("Slave_IO_Running");
-            String sqlRunning = rs.getString("Slave_SQL_Running");
+            String ioRunning = getNullableColumn(rs, dialect.getReplicaIoRunningColumn());
+            String sqlRunning = getNullableColumn(rs, dialect.getReplicaSqlRunningColumn());
             log.info("复制状态 - IO: {}, SQL: {}", ioRunning, sqlRunning);
-            return "Yes".equalsIgnoreCase(ioRunning)
-                    && "Yes".equalsIgnoreCase(sqlRunning);
+            if (isPostgreSqlPrimaryRoleState(dialect, ioRunning, sqlRunning)) {
+                return true;
+            }
+            return dialect.isReplicaRunning(ioRunning, sqlRunning);
         } catch (SQLException ex) {
             return false;
         }
     }
 
+    private boolean isPostgreSqlPrimaryRoleState(DatabaseDialect dialect, String ioRunning, String sqlRunning) {
+        if (dialect == null || dialect.getDatabaseType() == null || !"postgresql".equalsIgnoreCase(dialect.getDatabaseType())) {
+            return false;
+        }
+        return "primary".equalsIgnoreCase(ioRunning) && "primary".equalsIgnoreCase(sqlRunning);
+    }
+
     private long getReplicationLagSeconds(DataSourceWrapper slave) {
+        DatabaseDialect dialect = resolveDialect(slave);
+        if (dialect == null || dialect.getShowReplicaStatusSql() == null || dialect.getReplicaLagSecondsColumn() == null) {
+            return 0L;
+        }
         try (Connection connection = slave.getDataSource().getConnection();
              Statement statement = connection.createStatement();
-             ResultSet rs = statement.executeQuery("SHOW SLAVE STATUS")) {
+             ResultSet rs = statement.executeQuery(dialect.getShowReplicaStatusSql())) {
             if (!rs.next()) {
                 return 0L;
             }
-            String lag = rs.getString("Seconds_Behind_Master");
+            String lag = getNullableColumn(rs, dialect.getReplicaLagSecondsColumn());
             if (lag == null || "NULL".equalsIgnoreCase(lag)) {
                 return 0L;
             }
@@ -312,32 +355,64 @@ public class DataSourceHealthChecker {
         if (master == null) {
             return null;
         }
+        DatabaseDialect dialect = resolveDialect(master);
+        if (dialect == null || dialect.getShowPrimaryStatusSql() == null || dialect.getExecutedPositionColumn() == null) {
+            return null;
+        }
         try (Connection connection = master.getDataSource().getConnection();
              Statement statement = connection.createStatement();
-             ResultSet rs = statement.executeQuery("SHOW MASTER STATUS")) {
+             ResultSet rs = statement.executeQuery(dialect.getShowPrimaryStatusSql())) {
             if (rs.next()) {
-                return rs.getString("Executed_Gtid_Set");
+                return getNullableColumn(rs, dialect.getExecutedPositionColumn());
             }
         } catch (SQLException ex) {
-            log.debug("读取主库 GTID 失败: nodeId={}, reason={}", master.getId(), ex.getMessage());
+            log.debug("读取主库复制位点失败: nodeId={}, reason={}", master.getId(), ex.getMessage());
         }
         return null;
     }
 
     private String getExecutedGtidSet(DataSourceWrapper slave) {
+        DatabaseDialect dialect = resolveDialect(slave);
+        if (dialect == null || dialect.getShowReplicaStatusSql() == null || dialect.getExecutedPositionColumn() == null) {
+            return getMasterGtidPosition(slave);
+        }
         try (Connection connection = slave.getDataSource().getConnection();
              Statement statement = connection.createStatement();
-             ResultSet rs = statement.executeQuery("SHOW SLAVE STATUS")) {
+             ResultSet rs = statement.executeQuery(dialect.getShowReplicaStatusSql())) {
             if (rs.next()) {
-                String executed = rs.getString("Executed_Gtid_Set");
+                String executed = getNullableColumn(rs, dialect.getExecutedPositionColumn());
                 if (executed != null && !executed.trim().isEmpty()) {
                     return executed;
                 }
             }
         } catch (SQLException ex) {
-            log.debug("读取从库 Executed_Gtid_Set 失败: nodeId={}, reason={}", slave.getId(), ex.getMessage());
+            log.debug("读取从库复制位点失败: nodeId={}, reason={}", slave.getId(), ex.getMessage());
         }
         return getMasterGtidPosition(slave);
+    }
+
+    private DatabaseDialect resolveDialect(DataSourceWrapper wrapper) {
+        if (wrapper == null || wrapper.getUrl() == null) {
+            return null;
+        }
+        for (DatabaseDialect dialect : ServiceLoader.load(DatabaseDialect.class)) {
+            String databaseType = dialect.getDatabaseType();
+            if (databaseType != null && wrapper.getUrl().toLowerCase().startsWith("jdbc:" + databaseType.toLowerCase() + ":")) {
+                return dialect;
+            }
+        }
+        return null;
+    }
+
+    private String getNullableColumn(ResultSet rs, String column) throws SQLException {
+        if (column == null || column.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return rs.getString(column);
+        } catch (SQLException ex) {
+            return null;
+        }
     }
 
     public void triggerHealthCheck() {

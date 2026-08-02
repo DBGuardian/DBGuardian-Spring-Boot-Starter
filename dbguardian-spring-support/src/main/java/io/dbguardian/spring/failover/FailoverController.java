@@ -1,7 +1,11 @@
 package io.dbguardian.spring.failover;
 
 import io.dbguardian.core.datasource.DataSourceWrapper;
+import io.dbguardian.core.recovery.DatabaseRecoveryHandler;
+import io.dbguardian.core.recovery.DatabaseRecoverySettings;
+import io.dbguardian.core.recovery.DialectRecoveryContext;
 import io.dbguardian.core.registry.DataSourceRegistry;
+import io.dbguardian.spi.DatabaseDialect;
 import io.dbguardian.runtime.ClusterRuntimeState;
 import io.dbguardian.runtime.ClusterStatus;
 import io.dbguardian.spring.coordination.DatasourceCoordinationService;
@@ -15,6 +19,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Comparator;
 import java.util.List;
+import java.util.ServiceLoader;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
@@ -35,6 +40,7 @@ public class FailoverController {
     private String replicationPassword;
     private int catchupTimeoutSeconds = 300;
     private int catchupCheckIntervalSeconds = 2;
+    private DatabaseRecoverySettings recoverySettings = new DatabaseRecoverySettings();
 
     public FailoverController(DataSourceRegistry registry, DatasourceCoordinationService coordinationService) {
         this.registry = registry;
@@ -42,6 +48,16 @@ public class FailoverController {
     }
 
     public synchronized void handleMasterFailure(String failedMasterId) {
+        if (runtimeStateManager != null) {
+            ClusterRuntimeState state = runtimeStateManager.current();
+            if (state != null
+                    && ClusterStatus.SLAVE_PROMOTED.equals(state.getStatus())
+                    && state.getActiveMasterId() != null
+                    && !state.getActiveMasterId().equals(failedMasterId)) {
+                log.warn("当前已处于从库升主状态，跳过重复故障转移: failedMasterId={}, activeMaster={}", failedMasterId, state.getActiveMasterId());
+                return;
+            }
+        }
         if (!failoverInProgress.compareAndSet(false, true)) {
             return;
         }
@@ -112,30 +128,127 @@ public class FailoverController {
 
     public synchronized boolean recoverOriginalMasterAndRestoreReplication(String reason) {
         if (runtimeStateManager == null) {
+            log.warn("恢复原主流程跳过: runtimeStateManager 未初始化, reason={}", reason);
             return false;
         }
         ClusterRuntimeState state = runtimeStateManager.current();
         String originalMasterId = resolveRecoverySource(state);
         String promotedMasterId = resolveRecoveryTarget(state);
+        log.info("恢复原主流程入口: reason={}, status={}, activeMaster={}, pendingOriginalMaster={}, source={}, target={}",
+                reason,
+                safeClusterStatus(state),
+                safeActiveMasterId(state),
+                safePendingOriginalMasterId(state),
+                originalMasterId,
+                promotedMasterId);
         DataSourceWrapper originalMaster = resolveNodeById(originalMasterId);
         DataSourceWrapper promotedMaster = resolveNodeById(promotedMasterId);
         if (originalMaster == null || promotedMaster == null) {
-            log.warn("恢复原主流程缺少节点: originalMaster={}, promotedMaster={}", originalMasterId, promotedMasterId);
+            log.warn("恢复原主流程缺少节点: originalMaster={}, promotedMaster={}, resolvedOriginalMaster={}, resolvedPromotedMaster={}",
+                    originalMasterId,
+                    promotedMasterId,
+                    originalMaster != null,
+                    promotedMaster != null);
             return false;
+        }
+        if (originalMaster.getId().equals(promotedMaster.getId())) {
+            log.info("恢复原主流程跳过同节点闭环: reason={}, nodeId={}, status={}",
+                    reason,
+                    originalMaster.getId(),
+                    safeClusterStatus(state));
+            return true;
+        }
+
+        DatabaseDialect originalMasterDialect = resolveDialect(originalMaster);
+        ClusterStatus currentStatus;
+        if (state == null) {
+            currentStatus = null;
+        } else {
+            currentStatus = state.getStatus();
+        }
+        if (ClusterStatus.RESTORING_REPLICATION.equals(currentStatus)
+                && isPostgreSqlStandby(originalMaster)
+                && isPostgreSqlPrimary(promotedMaster)) {
+            log.warn("PostgreSQL 回切阶段与实际角色不一致，先恢复原主主库角色: originalMaster={}, promotedMaster={}",
+                    originalMasterId, promotedMasterId);
+            moveToRecoveryStage(ClusterStatus.RESTORING_ORIGINAL_MASTER, originalMasterId, promotedMasterId,
+                    reason + "_postgresql_role_reconcile");
+            currentStatus = ClusterStatus.RESTORING_ORIGINAL_MASTER;
+        }
+        if (ClusterStatus.RESTORING_REPLICATION.equals(currentStatus)) {
+            currentMasterId = originalMasterId;
+            if (!restoreOriginalReplication(originalMaster, promotedMaster)) {
+                log.warn("原始复制关系恢复未完成，保持恢复阶段: originalMaster={}, rejoinNode={}", originalMasterId, promotedMasterId);
+                return false;
+            }
+            finishOriginalMasterRecovery(reason, originalMaster, promotedMaster);
+            return true;
+        }
+        if (ClusterStatus.RESTORING_ORIGINAL_MASTER.equals(currentStatus)) {
+            if (!restoreOriginalMasterRole(originalMaster)) {
+                log.warn("原主主库身份恢复未完成，保持恢复阶段: originalMaster={}", originalMasterId);
+                return false;
+            }
+            currentMasterId = originalMasterId;
+            moveToRecoveryStage(ClusterStatus.RESTORING_REPLICATION, originalMasterId, promotedMasterId, reason + "_replication_restoring");
+            if (!restoreOriginalReplication(originalMaster, promotedMaster)) {
+                log.warn("原始复制关系恢复未完成，保持恢复阶段: originalMaster={}, rejoinNode={}", originalMasterId, promotedMasterId);
+                return false;
+            }
+            finishOriginalMasterRecovery(reason, originalMaster, promotedMaster);
+            return true;
         }
 
         moveToRecoveryStage(ClusterStatus.RECOVERING_ORIGINAL_MASTER, originalMasterId, promotedMasterId, reason + "_recovery_started");
-        recoverMasterAsSlave(originalMaster, promotedMaster);
+        if (!recoverMasterAsSlave(originalMaster, promotedMaster)) {
+            runtimeStateManager.markSlavePromoted(promotedMasterId, originalMasterId, reason + "_manual_original_master_rebuild_required");
+            log.warn("原主恢复为从库未完成，停止自动恢复闭环: originalMaster={}, currentMaster={}", originalMasterId, promotedMasterId);
+            return false;
+        }
 
         moveToRecoveryStage(ClusterStatus.CATCHING_UP_ORIGINAL_MASTER, originalMasterId, promotedMasterId, reason + "_catchup_started");
         waitForCatchupOnMaster(originalMaster);
 
+        boolean keepPromotedPrimary = shouldKeepPromotedPrimaryAfterRecovery(originalMasterDialect);
+        log.info("原主追赶完成后的主从决策: keepPromotedPrimary={}, dialect={}, currentMaster={}, originalMaster={}",
+                keepPromotedPrimary,
+                safeDialectType(originalMasterDialect),
+                promotedMasterId,
+                originalMasterId);
+        if (keepPromotedPrimary) {
+            moveToRecoveryStage(ClusterStatus.RESTORING_REPLICATION, promotedMasterId, originalMasterId, reason + "_dialect_replication_restored");
+            currentMasterId = promotedMasterId;
+            runtimeStateManager.markMasterActive(promotedMasterId, originalMasterId, reason + "_dialect_recovery_completed");
+            if (coordinationService != null) {
+                coordinationService.setMasterStatus(DatasourceCoordinationService.STATUS_NORMAL);
+            }
+            logReplicationStatus(originalMaster, "dialect_original_master_catchup");
+            log.info("原主追赶完成并保留当前主库: currentMaster={}, standby={}", promotedMasterId, originalMasterId);
+            return true;
+        }
+
         moveToRecoveryStage(ClusterStatus.RESTORING_ORIGINAL_MASTER, originalMasterId, promotedMasterId, reason + "_original_master_restoring");
-        restoreOriginalMasterRole(originalMaster);
+        if (!restoreOriginalMasterRole(originalMaster)) {
+            log.warn("原主主库身份恢复未完成，保持恢复阶段: originalMaster={}", originalMasterId);
+            return false;
+        }
 
+        currentMasterId = originalMasterId;
         moveToRecoveryStage(ClusterStatus.RESTORING_REPLICATION, originalMasterId, promotedMasterId, reason + "_replication_restoring");
-        restoreOriginalReplication(originalMaster, promotedMaster);
+        if (!restoreOriginalReplication(originalMaster, promotedMaster)) {
+            log.warn("原始复制关系恢复未完成，保持恢复阶段: originalMaster={}, rejoinNode={}", originalMasterId, promotedMasterId);
+            return false;
+        }
 
+        finishOriginalMasterRecovery(reason, originalMaster, promotedMaster);
+        return true;
+    }
+
+    private void finishOriginalMasterRecovery(String reason,
+                                              DataSourceWrapper originalMaster,
+                                              DataSourceWrapper promotedMaster) {
+        String originalMasterId = safeNodeId(originalMaster);
+        String promotedMasterId = safeNodeId(promotedMaster);
         currentMasterId = originalMasterId;
         runtimeStateManager.markMasterActive(originalMasterId, promotedMasterId, reason + "_recovery_completed");
         if (coordinationService != null) {
@@ -143,6 +256,24 @@ public class FailoverController {
         }
         logReplicationStatus(promotedMaster, "原主恢复后从库");
         log.info("原主恢复闭环完成: originalMaster={}, slave={}", originalMasterId, promotedMasterId);
+    }
+
+    public synchronized boolean restoreReplicationToPrimary(DataSourceWrapper primaryNode,
+                                                            DataSourceWrapper rejoinNode,
+                                                            String reason) {
+        if (primaryNode == null || rejoinNode == null) {
+            log.warn("恢复复制关系缺少节点: primaryNode={}, rejoinNode={}", safeNodeId(primaryNode), safeNodeId(rejoinNode));
+            return false;
+        }
+        String primaryNodeId = primaryNode.getId();
+        String rejoinNodeId = rejoinNode.getId();
+        currentMasterId = primaryNodeId;
+        moveToRecoveryStage(ClusterStatus.RESTORING_REPLICATION, primaryNodeId, rejoinNodeId, reason + "_replication_restoring");
+        if (!restoreOriginalReplication(primaryNode, rejoinNode)) {
+            log.warn("恢复复制关系未完成，保持恢复阶段: primaryNode={}, rejoinNode={}", primaryNodeId, rejoinNodeId);
+            return false;
+        }
+        finishOriginalMasterRecovery(reason, primaryNode, rejoinNode);
         return true;
     }
 
@@ -164,7 +295,7 @@ public class FailoverController {
         DataSourceWrapper contaminatedSlave = resolveNodeById(contaminatedSlaveId);
         if (originalMaster == null || contaminatedSlave == null) {
             log.warn("GTID 污染恢复缺少节点: master={}, slave={}",
-                    originalMaster == null ? null : originalMaster.getId(),
+                    safeNodeId(originalMaster),
                     contaminatedSlaveId);
             return false;
         }
@@ -184,18 +315,22 @@ public class FailoverController {
         log.warn("检测到从库存在额外 GTID，开始主库追赶从库: master={}, slave={}, gtidDecision={}",
                 originalMaster.getId(), contaminatedSlave.getId(), gtidDecision);
 
+        DatabaseDialect dialect = resolveDialect(originalMaster);
+        if (dialect == null || dialect.getStartReplicationSql() == null) {
+            log.warn("当前方言不支持 GTID 污染恢复: master={}", originalMaster.getId());
+            return false;
+        }
         try (Connection connection = originalMaster.getDataSource().getConnection();
              Statement statement = connection.createStatement()) {
             enableReadOnly(originalMaster, "GTID 污染恢复阶段已冻结主库写入");
-            stopSlaveReplication(statement);
-            String sql = String.format(
-                    "CHANGE MASTER TO MASTER_HOST='%s', MASTER_PORT=%d, MASTER_USER='%s', MASTER_PASSWORD='%s', MASTER_AUTO_POSITION=1",
-                    extractHost(contaminatedSlave.getUrl()),
-                    extractPort(contaminatedSlave.getUrl()),
+            stopSlaveReplication(statement, dialect);
+            String sql = dialect.buildChangeReplicationSourceSql(
+                    dialect.getHostFromJdbcUrl(contaminatedSlave.getUrl()),
+                    dialect.getPortFromJdbcUrl(contaminatedSlave.getUrl()),
                     replicationUser,
                     replicationPassword);
             statement.execute(sql);
-            statement.execute("START SLAVE");
+            statement.execute(dialect.getStartReplicationSql());
             log.info("主库已开始从被污染从库追赶事务: master={}, slave={}", originalMaster.getId(), contaminatedSlave.getId());
         } catch (SQLException ex) {
             log.error("GTID 污染恢复启动失败: {}", ex.getMessage(), ex);
@@ -207,7 +342,7 @@ public class FailoverController {
 
         try (Connection connection = originalMaster.getDataSource().getConnection();
              Statement statement = connection.createStatement()) {
-            stopSlaveReplication(statement);
+            stopSlaveReplication(statement, dialect);
         } catch (SQLException ex) {
             log.debug("GTID 污染恢复结束时停止主库复制失败: {}", ex.getMessage());
         }
@@ -258,30 +393,36 @@ public class FailoverController {
     }
 
     private void reconfigureSlave(DataSourceWrapper slave, DataSourceWrapper newMaster) throws SQLException {
+        DatabaseDialect dialect = resolveDialect(slave);
         try (Connection conn = slave.getDataSource().getConnection(); Statement stmt = conn.createStatement()) {
-            stopSlaveReplication(stmt);
-            if (replicationUser != null && !replicationUser.isEmpty()) {
-                String masterHost = extractHost(newMaster.getUrl());
-                int masterPort = extractPort(newMaster.getUrl());
-                String sql = String.format(
-                        "CHANGE MASTER TO MASTER_HOST='%s', MASTER_PORT=%d, MASTER_USER='%s', MASTER_PASSWORD='%s', MASTER_AUTO_POSITION=1",
-                        masterHost, masterPort, replicationUser, replicationPassword);
+            stopSlaveReplication(stmt, dialect);
+            if (replicationUser != null && !replicationUser.isEmpty() && dialect != null && dialect.getStartReplicationSql() != null) {
+                String sql = dialect.buildChangeReplicationSourceSql(
+                        dialect.getHostFromJdbcUrl(newMaster.getUrl()), dialect.getPortFromJdbcUrl(newMaster.getUrl()), replicationUser, replicationPassword);
                 stmt.execute(sql);
-                stmt.execute("START SLAVE");
+                stmt.execute(dialect.getStartReplicationSql());
             }
-            try {
-                stmt.execute("SET GLOBAL READ_ONLY=ON");
-                stmt.execute("SET GLOBAL SUPER_READ_ONLY=ON");
-            } catch (SQLException ignored) {
-            }
+            enableReadOnlyStatements(stmt, dialect);
         }
     }
 
     private void promoteToMaster(DataSourceWrapper newMaster) throws SQLException {
+        DatabaseDialect dialect = resolveDialect(newMaster);
         try (Connection conn = newMaster.getDataSource().getConnection(); Statement stmt = conn.createStatement()) {
-            stopSlaveReplication(stmt);
-            stmt.execute("SET GLOBAL READ_ONLY=OFF");
-            stmt.execute("SET GLOBAL SUPER_READ_ONLY=OFF");
+            if (isPostgreSqlDialect(dialect) && isPostgreSqlPrimary(stmt)) {
+                log.info("PostgreSQL 节点已处于主库角色，跳过重复提升: nodeId={}", newMaster.getId());
+                disableReadOnlyStatements(stmt, dialect);
+                return;
+            }
+            stopSlaveReplication(stmt, dialect);
+            executeIfPresent(stmt, dialect == null ? null : dialect.getPromoteToPrimarySql());
+            disableReadOnlyStatements(stmt, dialect);
+        }
+    }
+
+    private boolean isPostgreSqlPrimary(Statement statement) throws SQLException {
+        try (ResultSet rs = statement.executeQuery("SELECT pg_is_in_recovery()")) {
+            return rs.next() && !rs.getBoolean(1);
         }
     }
 
@@ -291,62 +432,116 @@ public class FailoverController {
         if (demoted == null || currentMaster == null) {
             return;
         }
+        DatabaseDialect dialect = resolveDialect(demoted);
         try (Connection conn = demoted.getDataSource().getConnection(); Statement stmt = conn.createStatement()) {
-            stmt.execute("SET GLOBAL READ_ONLY=ON");
-            stmt.execute("SET GLOBAL SUPER_READ_ONLY=ON");
-            if (replicationUser != null && !replicationUser.isEmpty()) {
-                String sql = String.format(
-                        "CHANGE MASTER TO MASTER_HOST='%s', MASTER_PORT=%d, MASTER_USER='%s', MASTER_PASSWORD='%s', MASTER_AUTO_POSITION=1",
-                        extractHost(currentMaster.getUrl()), extractPort(currentMaster.getUrl()), replicationUser, replicationPassword);
-                stopSlaveReplication(stmt);
+            enableReadOnlyStatements(stmt, dialect);
+            if (replicationUser != null && !replicationUser.isEmpty() && dialect != null && dialect.getStartReplicationSql() != null) {
+                String sql = dialect.buildChangeReplicationSourceSql(
+                        dialect.getHostFromJdbcUrl(currentMaster.getUrl()), dialect.getPortFromJdbcUrl(currentMaster.getUrl()), replicationUser, replicationPassword);
+                stopSlaveReplication(stmt, dialect);
                 stmt.execute(sql);
-                stmt.execute("START SLAVE");
+                stmt.execute(dialect.getStartReplicationSql());
             }
         } catch (SQLException ex) {
             log.error("降级节点 {} 失败: {}", demotedMasterId, ex.getMessage());
         }
     }
 
-    private void recoverMasterAsSlave(DataSourceWrapper originalMaster, DataSourceWrapper promotedMaster) {
+    private boolean recoverMasterAsSlave(DataSourceWrapper originalMaster, DataSourceWrapper promotedMaster) {
+        log.info("开始执行原主恢复为从库: originalMaster={}, promotedMaster={}", originalMaster.getId(), promotedMaster.getId());
         if (isBlank(replicationUser) || isBlank(replicationPassword)) {
             log.info("未配置复制用户，跳过原主恢复为从库");
-            return;
+            return false;
+        }
+        DatabaseDialect dialect = resolveDialect(originalMaster);
+        if (dialect == null) {
+            log.warn("原主恢复为从库失败: originalMaster={}, reason=dialect_not_found", originalMaster.getId());
+            return false;
+        }
+        if (dialect.getStartReplicationSql() == null) {
+            DatabaseRecoveryHandler recoveryHandler = resolveRecoveryHandler(dialect);
+            if (recoveryHandler != null) {
+                log.info("原主恢复为从库进入方言恢复处理器: originalMaster={}, promotedMaster={}, dialect={}",
+                        originalMaster.getId(),
+                        promotedMaster.getId(),
+                        dialect.getDatabaseType());
+                boolean recovered = recoveryHandler.recoverMasterAsSlave(buildRecoveryContext(originalMaster, promotedMaster, dialect));
+                log.info("原主恢复为从库方言处理器执行完成: originalMaster={}, promotedMaster={}, recovered={}",
+                        originalMaster.getId(),
+                        promotedMaster.getId(),
+                        recovered);
+                return recovered;
+            }
+            log.info("当前方言不支持原主恢复为从库: nodeId={}", originalMaster.getId());
+            return false;
         }
         try (Connection connection = originalMaster.getDataSource().getConnection();
              Statement statement = connection.createStatement()) {
-            stopSlaveReplication(statement);
+            stopSlaveReplication(statement, dialect);
             enableReadOnly(originalMaster, "原主恢复阶段已启用只读模式");
-            String sql = String.format(
-                    "CHANGE MASTER TO MASTER_HOST='%s', MASTER_PORT=%d, MASTER_USER='%s', MASTER_PASSWORD='%s', MASTER_AUTO_POSITION=1",
-                    extractHost(promotedMaster.getUrl()),
-                    extractPort(promotedMaster.getUrl()),
+            String sql = dialect.buildChangeReplicationSourceSql(
+                    dialect.getHostFromJdbcUrl(promotedMaster.getUrl()),
+                    dialect.getPortFromJdbcUrl(promotedMaster.getUrl()),
                     replicationUser,
                     replicationPassword);
             statement.execute(sql);
-            statement.execute("START SLAVE");
+            statement.execute(dialect.getStartReplicationSql());
             log.info("原主已开始作为从库追赶临时主库: originalMaster={}, promotedMaster={}", originalMaster.getId(), promotedMaster.getId());
+            return true;
         } catch (SQLException ex) {
             log.warn("原主恢复为从库失败: {}", ex.getMessage());
+            return false;
         }
     }
 
     private void waitForCatchupOnMaster(DataSourceWrapper originalMaster) {
+        log.info("开始等待原主追赶完成: nodeId={}, timeoutSeconds={}, checkIntervalSeconds={}",
+                originalMaster.getId(),
+                catchupTimeoutSeconds,
+                catchupCheckIntervalSeconds);
         int waited = 0;
         while (waited < catchupTimeoutSeconds) {
             try {
                 Thread.sleep(catchupCheckIntervalSeconds * 1000L);
                 waited += catchupCheckIntervalSeconds;
+                DatabaseDialect dialect = resolveDialect(originalMaster);
+                if (dialect == null || dialect.getShowReplicaStatusSql() == null) {
+                    log.warn("原主追赶状态检查提前结束: nodeId={}, reason=replica_status_sql_not_supported", originalMaster.getId());
+                    return;
+                }
                 try (Connection connection = originalMaster.getDataSource().getConnection();
                      Statement statement = connection.createStatement();
-                     ResultSet rs = statement.executeQuery("SHOW SLAVE STATUS")) {
+                     ResultSet rs = statement.executeQuery(dialect.getShowReplicaStatusSql())) {
                     if (!rs.next()) {
                         continue;
                     }
-                    String ioRunning = rs.getString("Slave_IO_Running");
-                    String sqlRunning = rs.getString("Slave_SQL_Running");
-                    String lag = rs.getString("Seconds_Behind_Master");
-                    boolean caughtUp = "Yes".equalsIgnoreCase(ioRunning)
-                            && "Yes".equalsIgnoreCase(sqlRunning)
+                    String ioRunning = getNullableColumn(rs, dialect.getReplicaIoRunningColumn());
+                    String sqlRunning = getNullableColumn(rs, dialect.getReplicaSqlRunningColumn());
+                    String lag = getNullableColumn(rs, dialect.getReplicaLagSecondsColumn());
+                    String replayPosition = getNullableColumn(rs, dialect.getExecutedPositionColumn());
+                    if (isPostgreSqlDialect(dialect)) {
+                        String currentMasterPosition = readCurrentMasterPosition(dialect);
+                        boolean replicaStreaming = dialect.isReplicaRunning(ioRunning, sqlRunning);
+                        boolean caughtUp = replicaStreaming
+                                && !isBlank(replayPosition)
+                                && replayPosition.equals(currentMasterPosition);
+                        if (caughtUp) {
+                            log.info("原主追赶完成: nodeId={}, replayPosition={}, replicaIoState={}, replicaSqlState={}, lag={}s",
+                                    originalMaster.getId(), replayPosition, ioRunning, sqlRunning,
+                                    lag == null ? "UNKNOWN" : lag);
+                            return;
+                        }
+                        log.info("原主追赶未完成: nodeId={}, replayPosition={}, currentMasterPosition={}, replicaStreaming={}, replicaIoState={}, replicaSqlState={}, lag={}s",
+                                originalMaster.getId(),
+                                replayPosition == null ? "UNKNOWN" : replayPosition,
+                                currentMasterPosition == null ? "UNKNOWN" : currentMasterPosition,
+                                Boolean.valueOf(replicaStreaming),
+                                ioRunning == null ? "UNKNOWN" : ioRunning,
+                                sqlRunning == null ? "UNKNOWN" : sqlRunning,
+                                lag == null ? "UNKNOWN" : lag);
+                        continue;
+                    }
+                    boolean caughtUp = dialect.isReplicaRunning(ioRunning, sqlRunning)
                             && ("0".equals(lag) || lag == null || "NULL".equalsIgnoreCase(lag));
                     if (caughtUp) {
                         log.info("原主追赶完成: nodeId={}", originalMaster.getId());
@@ -365,22 +560,98 @@ public class FailoverController {
         log.warn("原主追赶超时，继续执行后续恢复流程");
     }
 
-    private void restoreOriginalMasterRole(DataSourceWrapper originalMaster) {
-        disableReadOnly(originalMaster, "原主已恢复可写");
-        try (Connection connection = originalMaster.getDataSource().getConnection();
-             Statement statement = connection.createStatement()) {
-            stopSlaveReplication(statement);
+    private boolean isPostgreSqlDialect(DatabaseDialect dialect) {
+        return dialect != null && "postgresql".equalsIgnoreCase(dialect.getDatabaseType());
+    }
+
+    private boolean isPostgreSqlPrimary(DataSourceWrapper wrapper) {
+        return readPostgreSqlRecoveryMode(wrapper, false);
+    }
+
+    private boolean isPostgreSqlStandby(DataSourceWrapper wrapper) {
+        return readPostgreSqlRecoveryMode(wrapper, true);
+    }
+
+    private boolean readPostgreSqlRecoveryMode(DataSourceWrapper wrapper, boolean expectedRecoveryMode) {
+        if (wrapper == null || !isPostgreSqlDialect(resolveDialect(wrapper))) {
+            return false;
+        }
+        try (Connection connection = wrapper.getDataSource().getConnection();
+             Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery("SELECT pg_is_in_recovery()")) {
+            return rs.next() && rs.getBoolean(1) == expectedRecoveryMode;
         } catch (SQLException ex) {
-            log.debug("恢复原主主角色时停止复制失败: {}", ex.getMessage());
+            log.debug("读取 PostgreSQL 节点角色失败: nodeId={}, reason={}", wrapper.getId(), ex.getMessage());
+            return false;
         }
     }
 
-    private void restoreOriginalReplication(DataSourceWrapper originalMaster, DataSourceWrapper promotedMaster) {
+    private String readCurrentMasterPosition(DatabaseDialect dialect) {
+        DataSourceWrapper currentMaster = resolveCurrentMaster();
+        if (currentMaster == null || dialect == null || isBlank(dialect.getShowPrimaryStatusSql())) {
+            return null;
+        }
+        try (Connection connection = currentMaster.getDataSource().getConnection();
+             Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery(dialect.getShowPrimaryStatusSql())) {
+            if (!rs.next()) {
+                return null;
+            }
+            return getNullableColumn(rs, dialect.getExecutedPositionColumn());
+        } catch (Exception ex) {
+            log.debug("读取当前主库位置失败: nodeId={}, reason={}", currentMaster.getId(), ex.getMessage());
+            return null;
+        }
+    }
+
+    private boolean restoreOriginalMasterRole(DataSourceWrapper originalMaster) {
+        log.info("开始恢复原主主库身份: nodeId={}", originalMaster.getId());
+        DatabaseDialect dialect = resolveDialect(originalMaster);
+        DatabaseRecoveryHandler recoveryHandler = resolveRecoveryHandler(dialect);
+        if (recoveryHandler != null) {
+            log.info("恢复原主主库身份进入方言恢复处理器: nodeId={}, dialect={}",
+                    originalMaster.getId(),
+                    safeDialectType(dialect));
+            boolean restored = recoveryHandler.restoreOriginalMasterRole(buildRecoveryContext(originalMaster, resolveCurrentMaster(), dialect));
+            log.info("恢复原主主库身份方言处理器执行完成: nodeId={}, restored={}", originalMaster.getId(), restored);
+            return restored;
+        }
+        try {
+            promoteToMaster(originalMaster);
+            log.info("原主已恢复主库身份: nodeId={}", originalMaster.getId());
+            return true;
+        } catch (SQLException ex) {
+            log.warn("恢复原主主角色失败: nodeId={}, reason={}", originalMaster.getId(), ex.getMessage());
+            return false;
+        }
+    }
+
+    private boolean restoreOriginalReplication(DataSourceWrapper originalMaster, DataSourceWrapper promotedMaster) {
+        log.info("开始恢复原始复制关系: currentMaster={}, rejoinNode={}", originalMaster.getId(), promotedMaster.getId());
+        DatabaseDialect promotedDialect = resolveDialect(promotedMaster);
+        DatabaseRecoveryHandler recoveryHandler = resolveRecoveryHandler(promotedDialect);
+        if (recoveryHandler != null) {
+            boolean restored = recoveryHandler.restoreOriginalReplication(buildRecoveryContext(promotedMaster, originalMaster, promotedDialect));
+            if (restored) {
+                log.info("原始复制关系已通过方言恢复处理器恢复: currentMaster={}, rejoinNode={}", originalMaster.getId(), promotedMaster.getId());
+                logReplicationStatus(promotedMaster, "dialect_failback_rejoin");
+                return true;
+            }
+            if (isPostgreSqlDialect(promotedDialect)) {
+                log.warn("PostgreSQL 方言恢复处理器未完成复制重挂，停止回退到通用 SQL 重挂: currentMaster={}, rejoinNode={}",
+                        originalMaster.getId(),
+                        promotedMaster.getId());
+                return false;
+            }
+        }
         enableReadOnly(promotedMaster, "临时主已切回从库只读模式");
         try {
             reconfigureSlave(promotedMaster, originalMaster);
+            log.info("原始复制关系已通过通用复制重挂恢复: currentMaster={}, rejoinNode={}", originalMaster.getId(), promotedMaster.getId());
+            return true;
         } catch (SQLException ex) {
             log.warn("原从库重新挂回原主失败: {}", ex.getMessage());
+            return false;
         }
     }
 
@@ -388,6 +659,7 @@ public class FailoverController {
         registry.updateSlaveAvailability(failedSlaveId, false);
         if (runtimeStateManager != null) {
             runtimeStateManager.updateSlaveStatus(failedSlaveId, false, false, 0L, "slave_health_check_failed");
+            fallbackSlaveReadsToMaster(failedSlaveId);
         }
         if (coordinationService != null) {
             coordinationService.broadcastSlaveStatus(failedSlaveId, false);
@@ -397,10 +669,52 @@ public class FailoverController {
         }
     }
 
+    public boolean recoverSlaveReplication(String recoveredSlaveId) {
+        DataSourceWrapper recoveredSlave = registry.getSlave(recoveredSlaveId);
+        DataSourceWrapper currentMaster = resolveActiveMaster();
+        if (recoveredSlave == null || currentMaster == null || recoveredSlave.getId().equals(currentMaster.getId())) {
+            return false;
+        }
+        DatabaseDialect dialect = resolveDialect(recoveredSlave);
+        if (dialect == null || dialect.getDatabaseType() == null) {
+            return false;
+        }
+        if ("mysql".equalsIgnoreCase(dialect.getDatabaseType())) {
+            return restoreOriginalReplication(currentMaster, recoveredSlave);
+        }
+        if (!"postgresql".equalsIgnoreCase(dialect.getDatabaseType())) {
+            return false;
+        }
+
+        DatabaseRecoveryHandler recoveryHandler = resolveRecoveryHandler(dialect);
+        if (recoveryHandler == null) {
+            log.warn("PostgreSQL 从库复制重建跳过: nodeId={}, reason=recovery_handler_not_configured", recoveredSlaveId);
+            return false;
+        }
+        boolean rebuilt = rebuildPostgreSqlSlaveReplication(recoveredSlave, currentMaster, dialect, recoveryHandler);
+        if (!rebuilt) {
+            log.warn("PostgreSQL 从库复制重建失败: slave={}, primary={}", recoveredSlaveId, currentMaster.getId());
+            return false;
+        }
+        log.info("PostgreSQL 从库复制重建已完成，等待后续健康检查确认流复制: slave={}, primary={}",
+                recoveredSlaveId, currentMaster.getId());
+        return true;
+    }
+
+    protected boolean rebuildPostgreSqlSlaveReplication(DataSourceWrapper recoveredSlave,
+                                                        DataSourceWrapper currentMaster,
+                                                        DatabaseDialect dialect,
+                                                        DatabaseRecoveryHandler recoveryHandler) {
+        return recoveryHandler.recoverReplicaFromPrimary(
+                buildRecoveryContext(recoveredSlave, currentMaster, dialect)
+        );
+    }
+
     public void handleSlaveRecovery(String recoveredSlaveId) {
         registry.updateSlaveAvailability(recoveredSlaveId, true);
         if (runtimeStateManager != null) {
             runtimeStateManager.updateSlaveStatus(recoveredSlaveId, true, true, 0L, "slave_health_check_recovered");
+            restoreSlaveReads(recoveredSlaveId);
         }
         if (coordinationService != null) {
             coordinationService.broadcastSlaveStatus(recoveredSlaveId, true);
@@ -408,6 +722,32 @@ public class FailoverController {
         for (FailoverListener listener : listeners) {
             listener.onSlaveUp(recoveredSlaveId);
         }
+    }
+
+    private void fallbackSlaveReadsToMaster(String failedSlaveId) {
+        ClusterRuntimeState state = runtimeStateManager.current();
+        if (state == null
+                || !ClusterStatus.MASTER_ACTIVE.equals(state.getStatus())
+                || !failedSlaveId.equals(state.getActiveReadNodeId())) {
+            return;
+        }
+        DataSourceWrapper master = resolveActiveMaster();
+        if (master != null && master.isAvailable()) {
+            runtimeStateManager.markSlaveReadsFallbackToMaster(master.getId(), "slave_health_check_failed");
+        }
+    }
+
+    private void restoreSlaveReads(String recoveredSlaveId) {
+        ClusterRuntimeState state = runtimeStateManager.current();
+        DataSourceWrapper master = resolveActiveMaster();
+        if (state == null
+                || master == null
+                || recoveredSlaveId.equals(master.getId())
+                || !ClusterStatus.MASTER_ACTIVE.equals(state.getStatus())
+                || !state.isSlaveReadsBlocked()) {
+            return;
+        }
+        runtimeStateManager.restoreSlaveReads(master.getId(), recoveredSlaveId, "slave_health_check_recovered");
     }
 
     public void addListener(FailoverListener listener) {
@@ -438,6 +778,10 @@ public class FailoverController {
         this.catchupCheckIntervalSeconds = catchupCheckIntervalSeconds;
     }
 
+    public void setRecoverySettings(DatabaseRecoverySettings recoverySettings) {
+        this.recoverySettings = recoverySettings == null ? new DatabaseRecoverySettings() : recoverySettings;
+    }
+
     public void setRuntimeStateManager(ClusterRuntimeStateManager runtimeStateManager) {
         this.runtimeStateManager = runtimeStateManager;
     }
@@ -460,6 +804,20 @@ public class FailoverController {
             return master;
         }
         return registry.getSlave(currentMasterId);
+    }
+
+    private DataSourceWrapper resolveActiveMaster() {
+        if (runtimeStateManager != null && runtimeStateManager.current().getActiveMasterId() != null) {
+            DataSourceWrapper activeMaster = resolveNodeById(runtimeStateManager.current().getActiveMasterId());
+            if (activeMaster != null) {
+                return activeMaster;
+            }
+        }
+        DataSourceWrapper configuredMaster = resolveCurrentMaster();
+        if (configuredMaster != null) {
+            return configuredMaster;
+        }
+        return registry.getAvailableMasters().isEmpty() ? null : registry.getAvailableMasters().get(0);
     }
 
     private DataSourceWrapper resolveNodeById(String nodeId) {
@@ -509,17 +867,22 @@ public class FailoverController {
         if (slave == null || runtimeStateManager == null) {
             return;
         }
+        DatabaseDialect dialect = resolveDialect(slave);
+        if (dialect == null || dialect.getShowReplicaStatusSql() == null) {
+            return;
+        }
         try (Connection connection = slave.getDataSource().getConnection();
              Statement statement = connection.createStatement();
-             ResultSet rs = statement.executeQuery("SHOW SLAVE STATUS")) {
+             ResultSet rs = statement.executeQuery(dialect.getShowReplicaStatusSql())) {
             if (!rs.next()) {
                 return;
             }
-            log.info("复制状态 - IO: {}, SQL: {}", rs.getString("Slave_IO_Running"), rs.getString("Slave_SQL_Running"));
-            long lag = parseLag(rs.getString("Seconds_Behind_Master"));
+            String ioRunning = getNullableColumn(rs, dialect.getReplicaIoRunningColumn());
+            String sqlRunning = getNullableColumn(rs, dialect.getReplicaSqlRunningColumn());
+            log.info("复制状态 - IO: {}, SQL: {}", ioRunning, sqlRunning);
+            long lag = parseLag(getNullableColumn(rs, dialect.getReplicaLagSecondsColumn()));
             runtimeStateManager.updateSlaveStatus(slave.getId(), true,
-                    "Yes".equalsIgnoreCase(rs.getString("Slave_IO_Running"))
-                            && "Yes".equalsIgnoreCase(rs.getString("Slave_SQL_Running")),
+                    dialect.isReplicaRunning(ioRunning, sqlRunning),
                     lag,
                     scope + "_replication_observed");
         } catch (SQLException ex) {
@@ -531,10 +894,10 @@ public class FailoverController {
         if (wrapper == null) {
             return;
         }
+        DatabaseDialect dialect = resolveDialect(wrapper);
         try (Connection connection = wrapper.getDataSource().getConnection();
              Statement statement = connection.createStatement()) {
-            statement.execute("SET GLOBAL READ_ONLY=OFF");
-            statement.execute("SET GLOBAL SUPER_READ_ONLY=OFF");
+            disableReadOnlyStatements(statement, dialect);
             log.info(successLog);
         } catch (SQLException ex) {
             log.debug("关闭只读模式失败: nodeId={}, reason={}", wrapper.getId(), ex.getMessage());
@@ -545,21 +908,79 @@ public class FailoverController {
         if (wrapper == null) {
             return;
         }
+        DatabaseDialect dialect = resolveDialect(wrapper);
         try (Connection connection = wrapper.getDataSource().getConnection();
              Statement statement = connection.createStatement()) {
-            statement.execute("SET GLOBAL READ_ONLY=ON");
-            statement.execute("SET GLOBAL SUPER_READ_ONLY=ON");
+            enableReadOnlyStatements(statement, dialect);
             log.info(successLog);
         } catch (SQLException ex) {
             log.debug("开启只读模式失败: nodeId={}, reason={}", wrapper.getId(), ex.getMessage());
         }
     }
 
-    private void stopSlaveReplication(Statement stmt) {
+    private void stopSlaveReplication(Statement stmt, DatabaseDialect dialect) {
+        String stopReplicationSql = null;
+        String resetReplicationSql = null;
+        if (dialect != null) {
+            stopReplicationSql = dialect.getStopReplicationSql();
+            resetReplicationSql = dialect.getResetReplicationSql();
+        }
         try {
-            stmt.execute("STOP SLAVE");
-            stmt.execute("RESET SLAVE ALL");
+            executeIfPresent(stmt, stopReplicationSql);
+            executeIfPresent(stmt, resetReplicationSql);
         } catch (SQLException ignored) {
+        }
+    }
+
+    private void enableReadOnlyStatements(Statement statement, DatabaseDialect dialect) throws SQLException {
+        String enableReadOnlySql = null;
+        String enableStrictReadOnlySql = null;
+        if (dialect != null) {
+            enableReadOnlySql = dialect.getEnableReadOnlySql();
+            enableStrictReadOnlySql = dialect.getEnableStrictReadOnlySql();
+        }
+        executeIfPresent(statement, enableReadOnlySql);
+        executeIfPresent(statement, enableStrictReadOnlySql);
+    }
+
+    private void disableReadOnlyStatements(Statement statement, DatabaseDialect dialect) throws SQLException {
+        String disableReadOnlySql = null;
+        String disableStrictReadOnlySql = null;
+        if (dialect != null) {
+            disableReadOnlySql = dialect.getDisableReadOnlySql();
+            disableStrictReadOnlySql = dialect.getDisableStrictReadOnlySql();
+        }
+        executeIfPresent(statement, disableReadOnlySql);
+        executeIfPresent(statement, disableStrictReadOnlySql);
+    }
+
+    private void executeIfPresent(Statement statement, String sql) throws SQLException {
+        if (sql != null && !sql.trim().isEmpty()) {
+            statement.execute(sql);
+        }
+    }
+
+    private DatabaseDialect resolveDialect(DataSourceWrapper wrapper) {
+        if (wrapper == null || wrapper.getUrl() == null) {
+            return null;
+        }
+        for (DatabaseDialect dialect : ServiceLoader.load(DatabaseDialect.class)) {
+            String databaseType = dialect.getDatabaseType();
+            if (databaseType != null && wrapper.getUrl().toLowerCase().startsWith("jdbc:" + databaseType.toLowerCase() + ":")) {
+                return dialect;
+            }
+        }
+        return null;
+    }
+
+    private String getNullableColumn(ResultSet rs, String column) throws SQLException {
+        if (column == null || column.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return rs.getString(column);
+        } catch (SQLException ex) {
+            return null;
         }
     }
 
@@ -578,23 +999,94 @@ public class FailoverController {
         return value == null || value.trim().isEmpty();
     }
 
-    private String extractHost(String jdbcUrl) {
-        String body = jdbcUrl.replace("jdbc:mysql://", "");
-        int slash = body.indexOf('/');
-        String hostPort = slash >= 0 ? body.substring(0, slash) : body;
-        int colon = hostPort.indexOf(':');
-        return colon >= 0 ? hostPort.substring(0, colon) : hostPort;
+    private ClusterStatus safeClusterStatus(ClusterRuntimeState state) {
+        if (state == null) {
+            return null;
+        }
+        return state.getStatus();
     }
 
-    private int extractPort(String jdbcUrl) {
-        String body = jdbcUrl.replace("jdbc:mysql://", "");
-        int slash = body.indexOf('/');
-        String hostPort = slash >= 0 ? body.substring(0, slash) : body;
-        int colon = hostPort.indexOf(':');
-        if (colon < 0) {
-            return 3306;
+    private String safeActiveMasterId(ClusterRuntimeState state) {
+        if (state == null) {
+            return null;
         }
-        return Integer.parseInt(hostPort.substring(colon + 1));
+        return state.getActiveMasterId();
+    }
+
+    private String safePendingOriginalMasterId(ClusterRuntimeState state) {
+        if (state == null) {
+            return null;
+        }
+        return state.getPendingOriginalMasterId();
+    }
+
+    private String safeDialectType(DatabaseDialect dialect) {
+        if (dialect == null) {
+            return null;
+        }
+        return dialect.getDatabaseType();
+    }
+
+    private String safeNodeId(DataSourceWrapper wrapper) {
+        if (wrapper == null) {
+            return null;
+        }
+        return wrapper.getId();
+    }
+
+    private boolean shouldKeepPromotedPrimaryAfterRecovery(DatabaseDialect dialect) {
+        DatabaseRecoveryHandler recoveryHandler = resolveRecoveryHandler(dialect);
+        return recoveryHandler != null
+                && recoverySettings != null
+                && recoverySettings.isKeepPromotedPrimary();
+    }
+
+    private DatabaseRecoveryHandler resolveRecoveryHandler(DatabaseDialect dialect) {
+        if (dialect == null || recoverySettings == null) {
+            return null;
+        }
+        for (DatabaseRecoveryHandler handler : ServiceLoader.load(DatabaseRecoveryHandler.class)) {
+            if (handler.supports(dialect, recoverySettings)) {
+                return handler;
+            }
+        }
+        return null;
+    }
+
+    private DialectRecoveryContext buildRecoveryContext(DataSourceWrapper localNode,
+                                                        DataSourceWrapper targetPrimary,
+                                                        DatabaseDialect dialect) {
+        return new DialectRecoveryContext(
+                recoverySettings,
+                localNode,
+                targetPrimary,
+                dialect,
+                replicationUser,
+                replicationPassword,
+                catchupTimeoutSeconds
+        );
+    }
+
+    private String extractUsername(DataSourceWrapper wrapper) {
+        if (wrapper == null) {
+            return null;
+        }
+        if (!isBlank(wrapper.getUsername())) {
+            return wrapper.getUsername();
+        }
+        try (Connection connection = wrapper.getDataSource().getConnection()) {
+            return connection.getMetaData().getUserName();
+        } catch (Exception ex) {
+            log.debug("读取节点用户名失败: nodeId={}, reason={}", wrapper.getId(), ex.getMessage());
+            return null;
+        }
+    }
+
+    private String extractPassword(DataSourceWrapper wrapper) {
+        if (wrapper == null) {
+            return null;
+        }
+        return wrapper.getPassword();
     }
 
     public interface FailoverListener {

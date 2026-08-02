@@ -8,8 +8,10 @@ import io.dbguardian.core.ReplicationRecoveryCoordinator;
 import io.dbguardian.core.RoutingEngine;
 import io.dbguardian.core.TopologyRegistry;
 import io.dbguardian.core.datasource.DataSourceWrapper;
+import io.dbguardian.core.recovery.DatabaseRecoverySettings;
 import io.dbguardian.core.registry.DataSourceRegistry;
 import io.dbguardian.core.routing.DefaultRoutingPolicy;
+import io.dbguardian.spi.DatabaseDialect;
 import io.dbguardian.spring.DbGuardianRoutingDataSource;
 import io.dbguardian.spring.aspect.MyBatisPlusDataSourceAdvisor;
 import io.dbguardian.spring.aspect.MyBatisDataSourceAdvisor;
@@ -41,6 +43,7 @@ import javax.annotation.PostConstruct;
 import javax.sql.DataSource;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.ServiceLoader;
 
 @Configuration
 @EnableScheduling
@@ -59,6 +62,10 @@ public class DbGuardianBoot2AutoConfiguration {
     @ConditionalOnMissingBean
     public CapabilityRegistry capabilityRegistry() {
         CapabilityRegistry registry = new CapabilityRegistry();
+        for (DatabaseDialect dialect : ServiceLoader.load(DatabaseDialect.class)) {
+            registry.registerDatabaseDialect(dialect);
+            log.info("DBGuardian 数据库方言已加载: {}", dialect.getDatabaseType());
+        }
         registry.registerRoutingPolicy(new DefaultRoutingPolicy());
         return registry;
     }
@@ -257,6 +264,7 @@ public class DbGuardianBoot2AutoConfiguration {
         controller.setReplicationPassword(properties.getReplication().getMasterPassword());
         controller.setCatchupTimeoutSeconds(properties.getRecovery().getCatchupTimeoutSeconds());
         controller.setCatchupCheckIntervalSeconds(properties.getRecovery().getCatchupCheckIntervalSeconds());
+        controller.setRecoverySettings(buildRecoverySettings(properties.getRecovery().getPostgresql()));
         controller.setRuntimeStateManager(runtimeStateManager);
         return controller;
     }
@@ -312,12 +320,56 @@ public class DbGuardianBoot2AutoConfiguration {
         log.info("DBGuardian Boot2 自动配置已加载");
     }
 
+    private DatabaseRecoverySettings buildRecoverySettings(SpringDataSourceProperties.PostgreSqlRecoveryProperties properties) {
+        DatabaseRecoverySettings settings = new DatabaseRecoverySettings();
+        if (properties == null) {
+            return settings;
+        }
+        settings.setEnabled(properties.isEnabled());
+        settings.setKeepPromotedPrimary(properties.isKeepPromotedPrimary());
+        settings.setDataDirectory(properties.getDataDirectory());
+        settings.setConfigFile(properties.getConfigFile());
+        settings.setScriptPath(properties.getScriptPath());
+        settings.setPgCtlCommand(properties.getPgCtlCommand());
+        settings.setPsqlCommand(properties.getPsqlCommand());
+        settings.setPgRewindCommand(properties.getPgRewindCommand());
+        settings.setLocalHost(properties.getLocalHost());
+        settings.setLocalPort(properties.getLocalPort());
+        settings.setLocalDatabase(properties.getLocalDatabase());
+        settings.setPrimarySlotName(properties.getPrimarySlotName());
+        settings.setExtraPrimaryConnInfo(properties.getExtraPrimaryConnInfo());
+        settings.setStartupWaitSeconds(properties.getStartupWaitSeconds());
+        settings.setCommandTimeoutSeconds(properties.getCommandTimeoutSeconds());
+        settings.setRemoteExecutionEnabled(properties.isRemoteExecutionEnabled());
+        settings.setRemoteExecutorCommand(properties.getRemoteExecutorCommand());
+        settings.setRemoteExecutorPassword(properties.getRemoteExecutorPassword());
+        settings.setFailbackDataDirectory(properties.getFailbackDataDirectory());
+        settings.setFailbackConfigFile(properties.getFailbackConfigFile());
+        settings.setFailbackScriptPath(properties.getFailbackScriptPath());
+        settings.setFailbackPgCtlCommand(properties.getFailbackPgCtlCommand());
+        settings.setFailbackPsqlCommand(properties.getFailbackPsqlCommand());
+        settings.setFailbackPgRewindCommand(properties.getFailbackPgRewindCommand());
+        settings.setFailbackLocalHost(properties.getFailbackLocalHost());
+        settings.setFailbackLocalPort(properties.getFailbackLocalPort());
+        settings.setFailbackLocalDatabase(properties.getFailbackLocalDatabase());
+        settings.setFailbackPrimarySlotName(properties.getFailbackPrimarySlotName());
+        settings.setFailbackExtraPrimaryConnInfo(properties.getFailbackExtraPrimaryConnInfo());
+        settings.setFailbackStartupWaitSeconds(properties.getFailbackStartupWaitSeconds());
+        settings.setFailbackCommandTimeoutSeconds(properties.getFailbackCommandTimeoutSeconds());
+        settings.setFailbackRemoteExecutionEnabled(properties.isFailbackRemoteExecutionEnabled());
+        settings.setFailbackRemoteExecutorCommand(properties.getFailbackRemoteExecutorCommand());
+        settings.setFailbackRemoteExecutorPassword(properties.getFailbackRemoteExecutorPassword());
+        return settings;
+    }
+
     private DataSource createDataSource(SpringDataSourceProperties.NodeProperties node, String defaultPoolName) {
         HikariDataSource dataSource = new HikariDataSource();
         dataSource.setJdbcUrl(node.getUrl());
         dataSource.setUsername(node.getUsername());
         dataSource.setPassword(node.getPassword());
-        dataSource.setDriverClassName(node.getDriverClassName());
+        if (node.getDriverClassName() != null && !node.getDriverClassName().trim().isEmpty()) {
+            dataSource.setDriverClassName(node.getDriverClassName());
+        }
         dataSource.setMaximumPoolSize(node.getHikari().getMaximumPoolSize());
         dataSource.setMinimumIdle(node.getHikari().getMinimumIdle());
         dataSource.setConnectionTimeout(node.getHikari().getConnectionTimeout());

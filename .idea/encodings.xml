@@ -9,6 +9,10 @@
     <file url="file://$PROJECT_DIR$/dbguardian-boot3-starter/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/dbguardian-core/src/main/java" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/dbguardian-core/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/dbguardian-dialect-mysql/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/dbguardian-dialect-mysql/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/dbguardian-dialect-postgresql/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/dbguardian-dialect-postgresql/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/dbguardian-spring-support/src/main/java" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/dbguardian-spring-support/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/src/main/java" charset="UTF-8" />
