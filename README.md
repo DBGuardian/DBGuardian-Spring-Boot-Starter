@@ -181,19 +181,21 @@ spring:
     timeout: 10000ms
 ```
 
-## PostgreSQL 自动追赶与远程执行
+## PostgreSQL 自动追赶、远程执行与读路由恢复
 
-PostgreSQL 场景下，原主恢复后不能像 MySQL 那样直接重挂复制。DBGuardian 会在故障恢复阶段触发 `pg_rewind` 链路，把旧主追赶成当前主库的 standby。
+PostgreSQL 在从库提升为主库后，原主通常已处于不同的时间线，不能通过 JDBC 复制 SQL 直接重新挂接。DBGuardian 会在故障恢复阶段调用 `pg_rewind`，使待恢复节点追赶当前主库并作为 standby 启动。
 
-关键约束：
+恢复方向始终是：**待恢复节点跟随当前主库**。`pg_rewind` 脚本必须在待恢复 PostgreSQL 节点本机执行：应用与数据库同机时可本地执行；分离部署时，应通过 SSH 或其他远程代理将脚本调度到该节点。
 
-- `pg_rewind` 脚本的语义始终是“在目标 PostgreSQL 节点本机执行”
-- 如果应用进程与数据库节点同机，可以直接本地执行
-- 如果应用进程与数据库节点分离，可以开启远程代理执行，由应用机发起命令，在数据库节点本机落脚执行脚本
-- `keep-promoted-primary=true` 表示保留当前已升主节点继续做主库
-- `keep-promoted-primary=false` 表示旧主追赶完成后，进一步执行回切，把旧主恢复为主库，并让当前主回挂为从库
+读路由由异步健康检查控制：
 
-本地执行示例：
+1. 从库不可用或复制异常时，将其移出可读从库池，读请求改路由到主库。
+2. `pg_rewind` 或复制重建成功不代表从库立即可读，读请求仍保持在主库。
+3. 后续健康检查确认 `pg_stat_wal_receiver.status = streaming` 后，才将从库加回读池并恢复从库读路由。
+
+`keep-promoted-primary=true`（默认）表示保留故障期间升主的节点；旧主追赶后成为它的从库。设置为 `false` 时，旧主追平后会执行回切：旧主升回主库，当前主再追赶并回挂到旧主。
+
+### 本地执行示例
 
 ```yaml
 spring:
@@ -201,114 +203,110 @@ spring:
     master:
       url: jdbc:postgresql://pg-a:5432/appdb
       username: app_user
-      password: app_secret
+      password: ${DBGUARDIAN_DB_PASSWORD}
       driver-class-name: org.postgresql.Driver
     slave:
       url: jdbc:postgresql://pg-b:5432/appdb
       username: app_user
-      password: app_secret
+      password: ${DBGUARDIAN_DB_PASSWORD}
       driver-class-name: org.postgresql.Driver
     replication:
       master-user: repl_user
-      master-password: repl_secret
+      master-password: ${DBGUARDIAN_REPL_PASSWORD}
     recovery:
       enabled: true
       auto-failback: true
       postgresql:
         enabled: true
         keep-promoted-primary: true
-        data-directory: /var/lib/postgresql/16/main # pg-a 数据目录
-        script-path: /opt/dbguardian/scripts/pg-rewind-recover.sh # pg-a 上的脚本路径
-        pg-ctl-command: /usr/bin/pg_ctl # pg-a 上的 pg_ctl
-        psql-command: /usr/bin/psql # pg-a 上的 psql
-        pg-rewind-command: /usr/bin/pg_rewind # pg-a 上的 pg_rewind
-        local-host: 127.0.0.1 # pg-a 本机
-        local-port: 5432 # pg-a 本机端口
-        local-database: postgres # pg-a 本机数据库
-        primary-slot-name: appdb_slot # pg-a 追主使用的复制槽
-        extra-primary-conn-info: "target_session_attrs=read-write" # 写入 pg-a 的 primary_conninfo 附加参数
-        startup-wait-seconds: 60 # 等待 pg-a 进入 recovery 的时长
-        command-timeout-seconds: 900 # pg-a 这次追赶脚本的超时时间
+        # 以下路径和本地连接均属于待恢复节点 pg-a。
+        data-directory: /var/lib/postgresql/16/main
+        config-file: /etc/postgresql/16/main/postgresql.conf
+        script-path: /opt/dbguardian/scripts/pg-rewind-recover.sh
+        pg-ctl-command: /usr/lib/postgresql/16/bin/pg_ctl
+        psql-command: /usr/lib/postgresql/16/bin/psql
+        pg-rewind-command: /usr/lib/postgresql/16/bin/pg_rewind
+        local-host: 127.0.0.1
+        local-port: 5432
+        local-database: appdb
+        primary-slot-name: appdb_slot
+        extra-primary-conn-info: "target_session_attrs=read-write"
+        startup-wait-seconds: 60
+        command-timeout-seconds: 900
 ```
 
-对应关系直接按上面的 `pg-a` / `pg-b` 理解：
+此模式要求应用进程能够访问 `pg-a` 的数据目录，并有权限以 PostgreSQL 系统用户执行脚本和相关工具。
 
-- `data-directory` 到 `command-timeout-seconds` 这一组，填的是 `pg-a` 这台旧主节点上的参数
-- `local-host` / `local-port` / `local-database` 也是 `pg-a` 本机连接信息
-- `primary-slot-name`、`extra-primary-conn-info`、`startup-wait-seconds`、`command-timeout-seconds` 也都是作用在 `pg-a` 这一段追赶流程上
-- 这段是本地执行模式，所以脚本、命令、数据目录都直接取 `pg-a` 本机路径
-- 当前示例为 `keep-promoted-primary=true`，因此不需要配置 `failback-*`
-
-远程代理执行示例：
+### 远程执行与回切示例
 
 ```yaml
 spring:
   datasource:
-    master:
-      url: jdbc:postgresql://pg-a:5432/appdb
-      username: app_user
-      password: app_secret
-      driver-class-name: org.postgresql.Driver
-    slave:
-      url: jdbc:postgresql://pg-b:5432/appdb
-      username: app_user
-      password: app_secret
-      driver-class-name: org.postgresql.Driver
     replication:
-      master-user: repl_user
-      master-password: repl_secret
+      master-host: 192.168.3.150
+      master-port: 5432
+      master-user: repl
+      master-password: ${DBGUARDIAN_REPL_PASSWORD}
+      auto-reconnect: true
     recovery:
       enabled: true
       auto-failback: true
       postgresql:
         enabled: true
         keep-promoted-primary: false
+
+        # 原主恢复为从库时，在原主节点 192.168.3.150 执行。
         data-directory: /var/lib/postgresql/16/main
+        config-file: /etc/postgresql/16/main/postgresql.conf
         script-path: /opt/dbguardian/scripts/pg-rewind-recover.sh
         remote-execution-enabled: true
         remote-executor-command: >
-          ssh postgres@pg-a "{env_sh} bash {script_path_sh}"
-        pg-ctl-command: /usr/bin/pg_ctl
-        psql-command: /usr/bin/psql
-        pg-rewind-command: /usr/bin/pg_rewind
-        local-host: 127.0.0.1 # pg-a 本机
-        local-port: 5432 # pg-a 本机端口
-        local-database: postgres # pg-a 本机数据库
+          ssh ubuntu@192.168.3.150 "sudo -n -u postgres env {env_sh} bash {script_path_sh}"
+        remote-executor-password: ${DBGUARDIAN_SSH_PASSWORD}
+        pg-ctl-command: /usr/lib/postgresql/16/bin/pg_ctl
+        psql-command: /usr/lib/postgresql/16/bin/psql
+        pg-rewind-command: /usr/lib/postgresql/16/bin/pg_rewind
+        local-host: 127.0.0.1
+        local-port: 5432
+        local-database: appdb
         primary-slot-name: appdb_slot
         extra-primary-conn-info: "target_session_attrs=read-write"
         startup-wait-seconds: 60
         command-timeout-seconds: 900
+
+        # 回切时恢复从库，在恢复从库节点 192.168.3.151 执行。
+        # failback-* 是历史命名，当前代表恢复从库一侧的执行配置。
         failback-data-directory: /var/lib/postgresql/16/main
+        failback-config-file: /etc/postgresql/16/main/postgresql.conf
         failback-script-path: /opt/dbguardian/scripts/pg-rewind-recover.sh
         failback-remote-execution-enabled: true
         failback-remote-executor-command: >
-          ssh postgres@pg-b "{env_sh} bash {script_path_sh}"
-        failback-pg-ctl-command: /usr/bin/pg_ctl
-        failback-psql-command: /usr/bin/psql
-        failback-pg-rewind-command: /usr/bin/pg_rewind
-        failback-local-host: 127.0.0.1 # pg-b 本机
-        failback-local-port: 5432 # pg-b 本机端口
-        failback-local-database: postgres # pg-b 本机数据库
+          ssh ubuntu@192.168.3.151 "sudo -n -u postgres env {env_sh} bash {script_path_sh}"
+        failback-remote-executor-password: ${DBGUARDIAN_SSH_PASSWORD}
+        failback-pg-ctl-command: /usr/lib/postgresql/16/bin/pg_ctl
+        failback-psql-command: /usr/lib/postgresql/16/bin/psql
+        failback-pg-rewind-command: /usr/lib/postgresql/16/bin/pg_rewind
+        failback-local-host: 127.0.0.1
+        failback-local-port: 5432
+        failback-local-database: appdb
         failback-primary-slot-name: appdb_slot
         failback-extra-primary-conn-info: "target_session_attrs=read-write"
+        failback-startup-wait-seconds: 60
         failback-command-timeout-seconds: 900
 ```
 
-对应关系直接按上面的 `pg-a` / `pg-b` 理解：
+远程命令模板中的 `{env_sh}` 和 `{script_path_sh}` 必须原样保留，由执行器在运行时替换。`remote-executor-password` 只用于 SSH 登录，不能作为 `sudo` 密码；生产环境应优先使用 SSH 密钥，并为专用 SSH 用户配置仅允许恢复脚本的 `sudo -n -u postgres` 权限。
 
-- `data-directory` 到 `command-timeout-seconds` 这一组，填的是 `pg-a` 这台节点上的参数
-- `remote-executor-command` 连接的也是 `pg-a`
-- `failback-data-directory` 到 `failback-command-timeout-seconds` 这一组，填的是 `pg-b` 这台节点上的参数
-- `failback-remote-executor-command` 连接的是 `pg-b`
+从库恢复完成后，可在该节点确认状态：
 
-远程模式里，`remote-executor-command` / `failback-remote-executor-command` 是应用机上的代理命令模板。执行器会把恢复参数渲染到模板中的占位符，再由这条命令把脚本调度到目标数据库节点本机执行。常用占位符包括：
+```sql
+SELECT pg_is_in_recovery();
+SELECT status FROM pg_stat_wal_receiver;
+```
 
-- `{env_sh}`：shell 环境变量导出片段
-- `{env_cmd}`：Windows cmd 环境变量片段
-- `{env_ps}`：PowerShell 环境变量片段
-- `{script_path_sh}` / `{script_path_cmd}` / `{script_path_ps}`：适配不同 shell 的脚本路径
+只有 `pg_is_in_recovery()` 为 `true` 且 `status` 为 `streaming`，DBGuardian 的后续健康检查才会恢复从库读路由。
 
-更多字段说明见 `DBGuardian-doc/doc/PostgreSQL自动追赶说明.md`。
+完整部署、权限和故障排查说明见 `DBGuardian-doc/doc/PostgreSQL自动追赶说明.md`。
 
 ## 工作原理
 
