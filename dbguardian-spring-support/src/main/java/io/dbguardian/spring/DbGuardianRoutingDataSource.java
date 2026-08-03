@@ -18,16 +18,17 @@ public class DbGuardianRoutingDataSource extends AbstractRoutingDataSource {
     @Override
     protected Object determineCurrentLookupKey() {
         RoutingContext context = RoutingContextHolder.get();
-        if (context == null) {
+        if (runtimeStateManager != null) {
+            if (context == null) {
+                return runtimeStateManager.resolveLookupKey(true, false);
+            }
+            boolean readOperation = context.getOperation() != null && "read".equalsIgnoreCase(context.getOperation());
+            return runtimeStateManager.resolveLookupKey(context.isForceMaster(), readOperation);
+        }
+        if (context == null || context.isForceMaster()) {
             return MASTER_KEY;
         }
         boolean readOperation = context.getOperation() != null && "read".equalsIgnoreCase(context.getOperation());
-        if (runtimeStateManager != null) {
-            return runtimeStateManager.resolveLookupKey(context.isForceMaster(), readOperation);
-        }
-        if (context.isForceMaster()) {
-            return MASTER_KEY;
-        }
         return readOperation ? SLAVE_KEY : MASTER_KEY;
     }
 }

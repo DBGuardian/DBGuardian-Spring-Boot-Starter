@@ -44,6 +44,9 @@ public class DatasourceStatusListener implements MessageListener {
         }
         try {
             container.addMessageListener(this, new ChannelTopic(STATUS_CHANNEL));
+            if (coordinationService.isHealthy()) {
+                container.start();
+            }
             subscribed = true;
             log.info("已订阅数据源状态变更频道: {}", STATUS_CHANNEL);
         } catch (Exception ex) {

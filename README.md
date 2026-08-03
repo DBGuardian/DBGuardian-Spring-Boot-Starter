@@ -10,7 +10,14 @@
   ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 </div>
 
-Spring Boot 数据库高可用 Starter - 读写分离 + 自动故障转移
+Spring Boot 数据库高可用 Starter，提供读写分离、自动故障转移与降级启动能力。
+
+该仓库同时包含两个 Starter 模块：
+
+- `dbguardian-boot2-starter`：适用于 Spring Boot 2.7.x，Redis 使用 `spring.redis` 配置前缀。
+- `dbguardian-boot3-starter`：适用于 Spring Boot 3.x，Redis 使用 `spring.data.redis` 配置前缀。
+
+两个模块共用核心故障转移、路由和 PostgreSQL 恢复能力。
 
 ## 功能特性
 
@@ -23,7 +30,9 @@ Spring Boot 数据库高可用 Starter - 读写分离 + 自动故障转移
 
 ## 快速开始
 
-### 1. 添加依赖
+### 1. 选择并添加依赖
+
+Spring Boot 2.7.x：
 
 ```xml
 <dependency>
@@ -33,7 +42,19 @@ Spring Boot 数据库高可用 Starter - 读写分离 + 自动故障转移
 </dependency>
 ```
 
+Spring Boot 3.x：
+
+```xml
+<dependency>
+    <groupId>io.dbguardian</groupId>
+    <artifactId>dbguardian-boot3-starter</artifactId>
+    <version>1.0.0</version>
+</dependency>
+```
+
 ### 2. 配置文件
+
+以下示例使用 Spring Boot 2 的 Redis 前缀 `spring.redis`。Spring Boot 3 请将同一段 Redis 配置放在 `spring.data.redis` 下，其余数据源配置保持一致。
 
 ```yaml
 spring:
@@ -361,9 +382,11 @@ SELECT status FROM pg_stat_wal_receiver;
 
 ## 依赖要求
 
-- Spring Boot 2.7.x
-- MySQL 5.7+ / 8.0+
-- Redis 6.x+ (可选，用于分布式协调)
+- Spring Boot 2.7.x 使用 `dbguardian-boot2-starter`
+- Spring Boot 3.x 使用 `dbguardian-boot3-starter`
+- Java 8 / 11 / 17 / 21，按 Spring Boot 版本选择兼容组合
+- MySQL 5.7+ / 8.0+ 或 PostgreSQL
+- Redis 6.x+（可选，用于分布式协调）
 
 ## 测试
 

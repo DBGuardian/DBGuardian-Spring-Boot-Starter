@@ -100,14 +100,14 @@ public class DbGuardianBoot2AutoConfiguration {
     @ConditionalOnMissingBean(name = "dbguardianMasterDataSource")
     @ConditionalOnProperty(prefix = "spring.datasource.master", name = "url")
     public DataSource masterDataSource(SpringDataSourceProperties properties) {
-        return createDataSource(properties.getMaster(), "dbguardian-master-pool");
+        return createDataSource(properties.getMaster(), "dbguardian-master-pool", false);
     }
 
     @Bean(name = "dbguardianSlaveDataSource")
     @ConditionalOnMissingBean(name = "dbguardianSlaveDataSource")
     @ConditionalOnProperty(prefix = "spring.datasource.slave", name = "url")
     public DataSource slaveDataSource(SpringDataSourceProperties properties) {
-        return createDataSource(properties.getSlave(), "dbguardian-slave-pool");
+        return createDataSource(properties.getSlave(), "dbguardian-slave-pool", false);
     }
 
     @Bean
@@ -140,6 +140,7 @@ public class DbGuardianBoot2AutoConfiguration {
                     100,
                     false,
                     slaveDataSource));
+            registry.updateSlaveAvailability("slave", false);
         }
         return registry;
     }
@@ -160,6 +161,7 @@ public class DbGuardianBoot2AutoConfiguration {
         routingDataSource.setRuntimeStateManager(runtimeStateManager);
         routingDataSource.setTargetDataSources(targetDataSources);
         routingDataSource.setDefaultTargetDataSource(masterDataSource);
+        routingDataSource.setLenientFallback(false);
         routingDataSource.afterPropertiesSet();
         log.info("DBGuardian 读写分离数据源已初始化");
         return routingDataSource;
@@ -205,7 +207,12 @@ public class DbGuardianBoot2AutoConfiguration {
     @ConditionalOnMissingBean
     public RedisMessageListenerContainer redisMessageListenerContainer(
             @Autowired(required = false) RedisConnectionFactory redisConnectionFactory) {
-        RedisMessageListenerContainer container = new RedisMessageListenerContainer();
+        RedisMessageListenerContainer container = new RedisMessageListenerContainer() {
+            @Override
+            public boolean isAutoStartup() {
+                return false;
+            }
+        };
         if (redisConnectionFactory != null) {
             container.setConnectionFactory(redisConnectionFactory);
             log.info("Redis 消息监听容器已初始化");
@@ -362,7 +369,11 @@ public class DbGuardianBoot2AutoConfiguration {
         return settings;
     }
 
-    private DataSource createDataSource(SpringDataSourceProperties.NodeProperties node, String defaultPoolName) {
+    private boolean isMySql(String url) {
+        return url != null && url.toLowerCase().startsWith("jdbc:mysql:");
+    }
+
+    private DataSource createDataSource(SpringDataSourceProperties.NodeProperties node, String defaultPoolName, boolean failFast) {
         HikariDataSource dataSource = new HikariDataSource();
         dataSource.setJdbcUrl(node.getUrl());
         dataSource.setUsername(node.getUsername());
@@ -371,12 +382,15 @@ public class DbGuardianBoot2AutoConfiguration {
             dataSource.setDriverClassName(node.getDriverClassName());
         }
         dataSource.setMaximumPoolSize(node.getHikari().getMaximumPoolSize());
-        dataSource.setMinimumIdle(node.getHikari().getMinimumIdle());
+        dataSource.setMinimumIdle(failFast ? node.getHikari().getMinimumIdle() : 0);
         dataSource.setConnectionTimeout(node.getHikari().getConnectionTimeout());
         dataSource.setIdleTimeout(node.getHikari().getIdleTimeout());
         dataSource.setMaxLifetime(node.getHikari().getMaxLifetime());
         dataSource.setPoolName(node.getHikari().getPoolName() != null ? node.getHikari().getPoolName() : defaultPoolName);
         dataSource.setConnectionTestQuery("SELECT 1");
+        if (!failFast) {
+            dataSource.setInitializationFailTimeout(-1L);
+        }
         return dataSource;
     }
 }

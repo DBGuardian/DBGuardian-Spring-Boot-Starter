@@ -20,6 +20,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 
 import jakarta.annotation.PostConstruct;
 import java.sql.Connection;
+import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -66,6 +67,7 @@ public class DbGuardianRuntimeOrchestrator {
     public void initializeOnStartup() {
         failoverOrchestrator.initialize(topologyRegistry.getClusterModel());
         runtimeStateManager.initialize(dbGuardianProperties.getClusterId(), resolveMasterNodeId(), resolveReadNodeId());
+        initializeDatabaseAvailability();
         refreshRuntimeState("startup_initialized");
         log.info("DBGuardian 启动期运行态已初始化: status={}", runtimeStateManager.current().getStatus());
     }
@@ -73,7 +75,9 @@ public class DbGuardianRuntimeOrchestrator {
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
         log.info("=== 应用启动完成，重新检测数据源状态 ===");
-        dataSourceHealthChecker.triggerHealthCheck();
+        if (!isSlaveConfigured()) {
+            dataSourceHealthChecker.triggerHealthCheck();
+        }
         refreshRuntimeState("application_ready_recheck");
         ensureCoordinationInitializedAndSync();
         log.info("=== 最终数据源状态: {}, 主库: {}, 从库: {} ===",
@@ -109,6 +113,16 @@ public class DbGuardianRuntimeOrchestrator {
             return;
         }
         if (slaveOk) {
+            if (isPostgreSql(resolveConfiguredSlave())) {
+                String failedMasterId = currentState.getActiveMasterId() != null
+                        ? currentState.getActiveMasterId()
+                        : resolveMasterNodeId();
+                if (failoverController.promoteStartupSlaveToPrimary(resolveConfiguredSlave(), failedMasterId,
+                        reason + "_postgresql_slave_only")) {
+                    log.warn("数据源状态已恢复: SLAVE_PROMOTED（PostgreSQL 从库启动期升主）");
+                    return;
+                }
+            }
             if (!ClusterStatus.SLAVE_PROMOTED.equals(currentState.getStatus())
                     && !currentState.isRecoveryInProgress()) {
                 String failedMasterId = currentState.getActiveMasterId() != null
@@ -139,6 +153,13 @@ public class DbGuardianRuntimeOrchestrator {
                     reason,
                     dataSourceProperties.getRecovery().isEnabled(),
                     dataSourceProperties.getRecovery().isAutoFailback());
+            return false;
+        }
+        if (!isOriginalMasterAvailable(state)) {
+            log.debug("跳过原主恢复闭环: reason={}, originalMasterUnavailable={}, pendingOriginalMaster={}",
+                    reason,
+                    true,
+                    state == null ? null : state.getPendingOriginalMasterId());
             return false;
         }
         boolean shouldRecover = replicationRecoveryCoordinator.shouldRecover(state);
@@ -174,6 +195,15 @@ public class DbGuardianRuntimeOrchestrator {
         return true;
     }
 
+    private boolean isOriginalMasterAvailable(ClusterRuntimeState state) {
+        if (state == null || state.getPendingOriginalMasterId() == null) {
+            return false;
+        }
+        DataSourceWrapper originalMaster = dataSourceRegistry.getMaster(state.getPendingOriginalMasterId());
+        return originalMaster != null
+                && dataSourceRegistry.getAvailableMasters().stream()
+                .anyMatch(node -> state.getPendingOriginalMasterId().equals(node.getId()));
+    }
     private boolean isRemotePostgreSqlRecoveryPending(ClusterRuntimeState state) {
         if (state == null || !ClusterStatus.SLAVE_PROMOTED.equals(state.getStatus())) {
             return false;
@@ -194,6 +224,13 @@ public class DbGuardianRuntimeOrchestrator {
     }
 
     private void determineAndConfigureMasterSlave() {
+        if (!isMasterAvailable() || !isSlaveAvailable()) {
+            runtimeStateManager.markMasterActive(resolveMasterNodeId(), resolveMasterNodeId(),
+                    "replication_comparison_skipped_node_unavailable");
+            log.info("跳过主从复制位点比较，降级到单主库模式: masterAvailable={}, slaveAvailable={}",
+                    isMasterAvailable(), isSlaveAvailable());
+            return;
+        }
         DataSourceWrapper master = resolveConfiguredMaster();
         DataSourceWrapper slave = resolveConfiguredSlave();
         if (master == null || slave == null) {
@@ -318,6 +355,60 @@ public class DbGuardianRuntimeOrchestrator {
         log.info("状态已同步到 Redis: {}", currentStatus);
     }
 
+    private void initializeDatabaseAvailability() {
+        DataSourceWrapper master = resolveConfiguredMaster();
+        DataSourceWrapper slave = resolveConfiguredSlave();
+        boolean masterHealthy = isHealthyAtStartup(master);
+        boolean slaveHealthy = isSlaveConfigured() && isHealthyAtStartup(slave);
+        if (master != null) {
+            dataSourceRegistry.updateMasterAvailability(master.getId(), masterHealthy);
+        }
+        if (slave != null) {
+            dataSourceRegistry.updateSlaveAvailability(slave.getId(), slaveHealthy);
+        }
+        log.info("数据库启动可用性探测完成: master={}, slave={}", masterHealthy, slaveHealthy);
+    }
+
+    private boolean isHealthyAtStartup(DataSourceWrapper dataSource) {
+        if (dataSource == null) {
+            return false;
+        }
+        try (Connection connection = openStartupHealthCheckConnection(dataSource)) {
+            return connection.isValid(5);
+        } catch (SQLException ex) {
+            log.warn("数据库启动探测失败: nodeId={}, reason={}", dataSource.getId(), ex.getMessage());
+            return false;
+        }
+    }
+
+    private Connection openStartupHealthCheckConnection(DataSourceWrapper dataSource) throws SQLException {
+        if (isDirectJdbcDatabase(dataSource)) {
+            return DriverManager.getConnection(dataSource.getUrl(), dataSource.getUsername(), dataSource.getPassword());
+        }
+        return dataSource.getDataSource().getConnection();
+    }
+
+    private boolean isDirectJdbcDatabase(DataSourceWrapper dataSource) {
+        if (dataSource == null || dataSource.getUrl() == null) {
+            return false;
+        }
+        String url = dataSource.getUrl().toLowerCase();
+        return url.startsWith("jdbc:mysql:") || url.startsWith("jdbc:postgresql:");
+    }
+
+    private Connection openDirectOrPoolConnection(DataSourceWrapper dataSource) throws SQLException {
+        if (isDirectJdbcDatabase(dataSource)) {
+            return DriverManager.getConnection(dataSource.getUrl(), dataSource.getUsername(), dataSource.getPassword());
+        }
+        return dataSource.getDataSource().getConnection();
+    }
+
+    private boolean isPostgreSql(DataSourceWrapper dataSource) {
+        DatabaseDialect dialect = resolveDialect(dataSource);
+        return dialect != null
+                && dialect.getDatabaseType() != null
+                && "postgresql".equalsIgnoreCase(dialect.getDatabaseType());
+    }
     private boolean isMasterAvailable() {
         return dataSourceRegistry.getAvailableMasterCount() > 0;
     }
@@ -357,7 +448,7 @@ public class DbGuardianRuntimeOrchestrator {
             log.info("未配置复制用户，跳过复制重建");
             return;
         }
-        try (Connection connection = slave.getDataSource().getConnection();
+        try (Connection connection = openDirectOrPoolConnection(slave);
              Statement statement = connection.createStatement()) {
             stopSlave(statement, dialect);
             String sql = dialect.buildChangeReplicationSourceSql(
@@ -381,7 +472,7 @@ public class DbGuardianRuntimeOrchestrator {
         if (dialect == null || dialect.getShowReplicaStatusSql() == null) {
             return;
         }
-        try (Connection connection = slave.getDataSource().getConnection();
+        try (Connection connection = openDirectOrPoolConnection(slave);
              Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(dialect.getShowReplicaStatusSql())) {
             if (!rs.next()) {
@@ -408,7 +499,7 @@ public class DbGuardianRuntimeOrchestrator {
         if (dialect == null || dialect.getShowReplicaStatusSql() == null) {
             return false;
         }
-        try (Connection connection = slave.getDataSource().getConnection();
+        try (Connection connection = openDirectOrPoolConnection(slave);
              Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(dialect.getShowReplicaStatusSql())) {
             if (!rs.next()) {
@@ -428,7 +519,7 @@ public class DbGuardianRuntimeOrchestrator {
         if (dialect == null || dialect.getShowPrimaryStatusSql() == null || dialect.getExecutedPositionColumn() == null) {
             return "";
         }
-        try (Connection connection = wrapper.getDataSource().getConnection();
+        try (Connection connection = openDirectOrPoolConnection(wrapper);
              Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(dialect.getShowPrimaryStatusSql())) {
             if (rs.next()) {
@@ -511,7 +602,7 @@ public class DbGuardianRuntimeOrchestrator {
         if (dialect == null || dialect.getPromoteToPrimarySql() == null) {
             return;
         }
-        try (Connection connection = wrapper.getDataSource().getConnection();
+        try (Connection connection = openDirectOrPoolConnection(wrapper);
              Statement statement = connection.createStatement()) {
             statement.execute(dialect.getPromoteToPrimarySql());
             log.info(successLog);
@@ -528,7 +619,7 @@ public class DbGuardianRuntimeOrchestrator {
         if (dialect == null || dialect.getDisableReadOnlySql() == null) {
             return;
         }
-        try (Connection connection = wrapper.getDataSource().getConnection();
+        try (Connection connection = openDirectOrPoolConnection(wrapper);
              Statement statement = connection.createStatement()) {
             statement.execute(dialect.getDisableReadOnlySql());
             executeIfPresent(statement, dialect.getDisableStrictReadOnlySql());
@@ -546,7 +637,7 @@ public class DbGuardianRuntimeOrchestrator {
         if (dialect == null || dialect.getEnableReadOnlySql() == null) {
             return;
         }
-        try (Connection connection = wrapper.getDataSource().getConnection();
+        try (Connection connection = openDirectOrPoolConnection(wrapper);
              Statement statement = connection.createStatement()) {
             statement.execute(dialect.getEnableReadOnlySql());
             executeIfPresent(statement, dialect.getEnableStrictReadOnlySql());
@@ -630,6 +721,11 @@ public class DbGuardianRuntimeOrchestrator {
             }
         }
         return dataSourceRegistry.getAllMasters().isEmpty() ? "master" : dataSourceRegistry.getAllMasters().get(0).getId();
+    }
+
+    private boolean isSlaveConfigured() {
+        String url = dataSourceProperties.getSlave().getUrl();
+        return url != null && !url.trim().isEmpty();
     }
 
     private String resolveReadNodeId() {

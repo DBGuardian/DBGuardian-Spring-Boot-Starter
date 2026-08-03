@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 import java.sql.Connection;
+import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -58,7 +59,7 @@ public class DataSourceHealthChecker {
             return;
         }
         executor.scheduleAtFixedRate(this::checkMasters, 0, masterCheckIntervalSeconds, TimeUnit.SECONDS);
-        executor.scheduleAtFixedRate(this::checkSlaves, 0, slaveCheckIntervalSeconds, TimeUnit.SECONDS);
+        executor.scheduleAtFixedRate(this::checkSlaves, slaveCheckIntervalSeconds, slaveCheckIntervalSeconds, TimeUnit.SECONDS);
         log.info("数据源健康检查已启动: 主库间隔={}s, 从库间隔={}s", masterCheckIntervalSeconds, slaveCheckIntervalSeconds);
     }
 
@@ -118,7 +119,7 @@ public class DataSourceHealthChecker {
         for (DataSourceWrapper slave : registry.getAllSlaves()) {
             boolean promotedActiveMaster = isPromotedActiveMaster(slave.getId());
             boolean healthy = isHealthy(slave);
-            boolean replicationHealthy = promotedActiveMaster || checkReplicationHealthy(slave);
+            boolean replicationHealthy = promotedActiveMaster || (healthy && checkReplicationHealthy(slave));
             boolean wasAvailable = registry.getAvailableSlaves().stream().anyMatch(item -> item.getId().equals(slave.getId()));
             if (shouldRecoverSlaveReplication(slave, healthy, replicationHealthy, promotedActiveMaster, wasAvailable)) {
                 boolean rebuilt = failoverController.recoverSlaveReplication(slave.getId());
@@ -127,7 +128,7 @@ public class DataSourceHealthChecker {
                     replicationHealthy = false;
                 }
             }
-            long lag = promotedActiveMaster ? 0L : getReplicationLagSeconds(slave);
+            long lag = promotedActiveMaster || !healthy ? 0L : getReplicationLagSeconds(slave);
             boolean promotionCandidate = shouldKeepSlaveAvailableForPromotion(healthy, replicationHealthy);
             if (healthy && (replicationHealthy || promotionCandidate)) {
                 slave.healthCheckSuccess();
@@ -145,12 +146,12 @@ public class DataSourceHealthChecker {
                 }
             } else {
                 slave.healthCheckFailed();
+                registry.updateSlaveAvailability(slave.getId(), false);
                 if (runtimeStateManager != null) {
                     runtimeStateManager.updateSlaveStatus(slave.getId(), healthy, replicationHealthy, lag, "slave_health_check_failed");
                 }
                 applyGtidProtection(slave, promotedActiveMaster);
                 if (wasAvailable) {
-                    registry.updateSlaveAvailability(slave.getId(), false);
                     log.warn("从库 {} 不可用，已从负载池移除", slave.getId());
                     failoverController.handleSlaveFailure(slave.getId());
                 }
@@ -270,8 +271,8 @@ public class DataSourceHealthChecker {
 
     private boolean isHealthy(DataSourceWrapper dataSourceWrapper) {
         long start = System.currentTimeMillis();
-        try (Connection connection = dataSourceWrapper.getDataSource().getConnection()) {
-            boolean valid = connection.isValid(5);
+        try (Connection connection = openHealthCheckConnection(dataSourceWrapper)) {
+            boolean valid = connection != null && connection.isValid(5);
             if (valid) {
                 dataSourceWrapper.updateResponseTime(System.currentTimeMillis() - start);
             }
@@ -281,12 +282,30 @@ public class DataSourceHealthChecker {
         }
     }
 
+    private Connection openHealthCheckConnection(DataSourceWrapper dataSourceWrapper) throws SQLException {
+        if (isDirectJdbcDatabase(dataSourceWrapper)) {
+            return DriverManager.getConnection(
+                    dataSourceWrapper.getUrl(),
+                    dataSourceWrapper.getUsername(),
+                    dataSourceWrapper.getPassword());
+        }
+        return dataSourceWrapper.getDataSource().getConnection();
+    }
+
+    private boolean isDirectJdbcDatabase(DataSourceWrapper dataSourceWrapper) {
+        if (dataSourceWrapper == null || dataSourceWrapper.getUrl() == null) {
+            return false;
+        }
+        String url = dataSourceWrapper.getUrl().toLowerCase();
+        return url.startsWith("jdbc:mysql:") || url.startsWith("jdbc:postgresql:");
+    }
+
     private boolean checkReplicationHealthy(DataSourceWrapper slave) {
         DatabaseDialect dialect = resolveDialect(slave);
         if (dialect == null || dialect.getShowReplicaStatusSql() == null) {
             return true;
         }
-        try (Connection connection = slave.getDataSource().getConnection();
+        try (Connection connection = openHealthCheckConnection(slave);
              Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(dialect.getShowReplicaStatusSql())) {
             if (!rs.next()) {
@@ -316,7 +335,7 @@ public class DataSourceHealthChecker {
         if (dialect == null || dialect.getShowReplicaStatusSql() == null || dialect.getReplicaLagSecondsColumn() == null) {
             return 0L;
         }
-        try (Connection connection = slave.getDataSource().getConnection();
+        try (Connection connection = openHealthCheckConnection(slave);
              Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(dialect.getShowReplicaStatusSql())) {
             if (!rs.next()) {
@@ -359,7 +378,7 @@ public class DataSourceHealthChecker {
         if (dialect == null || dialect.getShowPrimaryStatusSql() == null || dialect.getExecutedPositionColumn() == null) {
             return null;
         }
-        try (Connection connection = master.getDataSource().getConnection();
+        try (Connection connection = openHealthCheckConnection(master);
              Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(dialect.getShowPrimaryStatusSql())) {
             if (rs.next()) {
@@ -376,7 +395,7 @@ public class DataSourceHealthChecker {
         if (dialect == null || dialect.getShowReplicaStatusSql() == null || dialect.getExecutedPositionColumn() == null) {
             return getMasterGtidPosition(slave);
         }
-        try (Connection connection = slave.getDataSource().getConnection();
+        try (Connection connection = openHealthCheckConnection(slave);
              Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(dialect.getShowReplicaStatusSql())) {
             if (rs.next()) {

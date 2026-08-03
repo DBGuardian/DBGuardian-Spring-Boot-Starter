@@ -97,6 +97,33 @@ public class FailoverController {
         }
     }
 
+    public synchronized boolean promoteStartupSlaveToPrimary(DataSourceWrapper promotedNode,
+                                                              String originalMasterId,
+                                                              String reason) {
+        if (promotedNode == null) {
+            log.warn("启动期 PostgreSQL 升主跳过: promotedNode=null");
+            return false;
+        }
+        try {
+            promoteToMaster(promotedNode);
+            currentMasterId = promotedNode.getId();
+            if (runtimeStateManager != null) {
+                runtimeStateManager.markSlavePromoted(promotedNode.getId(), originalMasterId, reason);
+            }
+            if (coordinationService != null && coordinationService.isHealthy()) {
+                coordinationService.setMasterStatus(DatasourceCoordinationService.STATUS_SLAVE_PROMOTED);
+            }
+            log.warn("启动期从库已升为主库，跳过失联原主操作: promotedMaster={}, originalMaster={}",
+                    promotedNode.getId(), originalMasterId);
+            return true;
+        } catch (SQLException ex) {
+            log.error("启动期从库升主失败: nodeId={}, reason={}", promotedNode.getId(), ex.getMessage(), ex);
+            if (runtimeStateManager != null) {
+                runtimeStateManager.markDegraded(reason + "_promotion_failed");
+            }
+            return false;
+        }
+    }
     public synchronized void handleOriginalMasterRecovery(String recoveredMasterId) {
         if (runtimeStateManager == null) {
             return;
@@ -416,6 +443,9 @@ public class FailoverController {
             }
             stopSlaveReplication(stmt, dialect);
             executeIfPresent(stmt, dialect == null ? null : dialect.getPromoteToPrimarySql());
+            if (isPostgreSqlDialect(dialect) && !waitForPostgreSqlPrimary(stmt)) {
+                throw new SQLException("PostgreSQL 升主超时，节点仍处于 recovery 状态");
+            }
             disableReadOnlyStatements(stmt, dialect);
         }
     }
@@ -424,6 +454,22 @@ public class FailoverController {
         try (ResultSet rs = statement.executeQuery("SELECT pg_is_in_recovery()")) {
             return rs.next() && !rs.getBoolean(1);
         }
+    }
+
+    private boolean waitForPostgreSqlPrimary(Statement statement) throws SQLException {
+        long deadline = System.currentTimeMillis() + Math.max(10L, catchupTimeoutSeconds) * 1000L;
+        while (System.currentTimeMillis() < deadline) {
+            if (isPostgreSqlPrimary(statement)) {
+                return true;
+            }
+            try {
+                Thread.sleep(Math.max(100L, catchupCheckIntervalSeconds * 1000L));
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return isPostgreSqlPrimary(statement);
     }
 
     private void demoteToSlave(String demotedMasterId) {

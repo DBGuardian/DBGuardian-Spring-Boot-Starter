@@ -165,6 +165,9 @@ public class ClusterRuntimeStateManager {
     }
 
     private String resolveActiveWriteLookupKey(ClusterRuntimeState state) {
+        if (state != null && ClusterStatus.SLAVE_PROMOTED.equals(state.getStatus())) {
+            return "slave";
+        }
         if (state == null || state.getActiveMasterId() == null) {
             return "master";
         }
