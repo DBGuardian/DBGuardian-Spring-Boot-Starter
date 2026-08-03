@@ -80,6 +80,7 @@ public class DbGuardianRuntimeOrchestrator {
         }
         refreshRuntimeState("application_ready_recheck");
         ensureCoordinationInitializedAndSync();
+        dataSourceHealthChecker.startHealthChecksAfterInitialization();
         log.info("=== 最终数据源状态: {}, 主库: {}, 从库: {} ===",
                 runtimeStateManager.current().getStatus(),
                 isMasterAvailable() ? "可用" : "不可用",
@@ -93,6 +94,8 @@ public class DbGuardianRuntimeOrchestrator {
             return;
         }
         dataSourceHealthChecker.triggerHealthCheck();
+        refreshRuntimeState("periodic_orchestration");
+        ensureCoordinationInitializedAndSync();
     }
 
     private void refreshRuntimeState(String reason) {
@@ -103,6 +106,30 @@ public class DbGuardianRuntimeOrchestrator {
 
         boolean masterOk = isMasterAvailable();
         boolean slaveOk = isSlaveAvailable();
+        DataSourceWrapper configuredMaster = resolveConfiguredMaster();
+        DataSourceWrapper configuredSlave = resolveConfiguredSlave();
+        if (masterOk && configuredMaster != null && !isHealthyAtStartup(configuredMaster)) {
+            dataSourceRegistry.updateMasterAvailability(configuredMaster.getId(), false);
+            masterOk = false;
+            log.warn("启动编排确认主库不可用: master={}", configuredMaster.getId());
+        }
+        if (slaveOk && configuredSlave != null && !isHealthyAtStartup(configuredSlave)) {
+            dataSourceRegistry.updateSlaveAvailability(configuredSlave.getId(), false);
+            slaveOk = false;
+            log.warn("启动编排确认从库不可用: slave={}", configuredSlave.getId());
+        }
+        if (!masterOk && slaveOk && isPostgreSql(configuredSlave)) {
+            String failedMasterId = currentState.getActiveMasterId() != null
+                    ? currentState.getActiveMasterId()
+                    : resolveMasterNodeId();
+            if (failoverController.promoteStartupSlaveToPrimary(
+                    configuredSlave,
+                    failedMasterId,
+                    reason + "_postgresql_master_unavailable")) {
+                log.warn("数据源状态已恢复: SLAVE_PROMOTED（PostgreSQL 启动期从库升主，读写请求路由到从库）");
+                return;
+            }
+        }
         if (masterOk && slaveOk) {
             determineAndConfigureMasterSlave();
             return;
@@ -238,8 +265,17 @@ public class DbGuardianRuntimeOrchestrator {
             return;
         }
 
-        String masterGtid = getGtidPosition(master);
-        String slaveGtid = getGtidPosition(slave);
+        String masterGtid;
+        String slaveGtid;
+        try {
+            masterGtid = getGtidPosition(master);
+            slaveGtid = getGtidPosition(slave);
+        } catch (RuntimeException ex) {
+            dataSourceRegistry.updateSlaveAvailability(slave.getId(), false);
+            runtimeStateManager.markMasterActive(master.getId(), master.getId(), "startup_slave_unavailable");
+            log.warn("启动期读取从库复制位点失败，降级到主库读写: slave={}, reason={}", slave.getId(), ex.getMessage());
+            return;
+        }
         String positionLabel = resolvePositionLabel(master, slave);
         log.info("主库 {}: {}", positionLabel, emptyToUnknown(masterGtid));
         log.info("从库 {}: {}", positionLabel, emptyToUnknown(slaveGtid));
@@ -304,13 +340,17 @@ public class DbGuardianRuntimeOrchestrator {
             return false;
         }
         String gtidDecision = "startup_slave_has_newer_lsn=" + emptyToUnknown(slaveGtid);
-        log.warn("检测到 PostgreSQL 从库位点领先，按已升主现状接管并直接进入原主恢复闭环: slave={}, decision={}", slave.getId(), gtidDecision);
-        disableReadOnly(slave, "已关闭数据源只读模式");
-        enableReadOnly(master, "已启用数据源只读模式");
-        runtimeStateManager.markSlavePromoted(slave.getId(), master.getId(), "startup_postgresql_slave_ahead");
-        if (!failoverController.recoverOriginalMasterAndRestoreReplication("startup_postgresql_slave_ahead")) {
-            log.warn("PostgreSQL 启动期原主恢复闭环触发失败，保持当前从库升主状态等待后续恢复: master={}, slave={}", master.getId(), slave.getId());
+        log.warn("检测到 PostgreSQL 从库位点领先，执行启动期从库升主: slave={}, decision={}", slave.getId(), gtidDecision);
+        if (!failoverController.promoteStartupSlaveToPrimary(
+                slave,
+                master.getId(),
+                "startup_postgresql_master_unavailable")) {
+            log.warn("PostgreSQL 启动期从库升主失败，保持主从降级状态等待后续健康检查: master={}, slave={}",
+                    master.getId(), slave.getId());
+            return false;
         }
+        disableReadOnly(slave, "已关闭升主从库只读模式");
+        log.warn("数据源状态已恢复: SLAVE_PROMOTED（PostgreSQL 从库升为主库，读写请求路由到从库）");
         return true;
     }
 
@@ -376,6 +416,9 @@ public class DbGuardianRuntimeOrchestrator {
         try (Connection connection = openStartupHealthCheckConnection(dataSource)) {
             return connection.isValid(5);
         } catch (SQLException ex) {
+            log.warn("数据库启动探测失败: nodeId={}, reason={}", dataSource.getId(), ex.getMessage());
+            return false;
+        } catch (RuntimeException ex) {
             log.warn("数据库启动探测失败: nodeId={}, reason={}", dataSource.getId(), ex.getMessage());
             return false;
         }
@@ -527,6 +570,8 @@ public class DbGuardianRuntimeOrchestrator {
                 return gtid == null ? "" : gtid;
             }
         } catch (SQLException ex) {
+            log.debug("获取节点复制位点失败: nodeId={}, reason={}", wrapper.getId(), ex.getMessage());
+        } catch (RuntimeException ex) {
             log.debug("获取节点复制位点失败: nodeId={}, reason={}", wrapper.getId(), ex.getMessage());
         }
         return "";

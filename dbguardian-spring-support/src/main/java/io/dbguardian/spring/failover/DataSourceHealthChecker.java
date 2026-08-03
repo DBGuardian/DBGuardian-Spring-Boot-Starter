@@ -43,6 +43,7 @@ public class DataSourceHealthChecker {
     private boolean failoverEnabled = true;
     private boolean gtidProtectionEnabled;
     private boolean blockSlaveReadsOnRisk = true;
+    private boolean autoStart = true;
 
     public DataSourceHealthChecker(DataSourceRegistry registry, FailoverController failoverController) {
         this.registry = registry;
@@ -51,6 +52,18 @@ public class DataSourceHealthChecker {
 
     @PostConstruct
     public void startHealthChecks() {
+        if (!autoStart) {
+            log.info("健康检查已配置为由运行时编排器启动");
+            return;
+        }
+        startHealthChecksInternal();
+    }
+
+    public void startHealthChecksAfterInitialization() {
+        startHealthChecksInternal();
+    }
+
+    private void startHealthChecksInternal() {
         if (!failoverEnabled) {
             log.info("故障转移已禁用，跳过健康检查");
             return;
@@ -489,5 +502,9 @@ public class DataSourceHealthChecker {
 
     public void setBlockSlaveReadsOnRisk(boolean blockSlaveReadsOnRisk) {
         this.blockSlaveReadsOnRisk = blockSlaveReadsOnRisk;
+    }
+
+    public void setAutoStart(boolean autoStart) {
+        this.autoStart = autoStart;
     }
 }

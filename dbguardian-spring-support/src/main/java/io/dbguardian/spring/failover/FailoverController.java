@@ -122,6 +122,12 @@ public class FailoverController {
                 runtimeStateManager.markDegraded(reason + "_promotion_failed");
             }
             return false;
+        } catch (RuntimeException ex) {
+            log.error("启动期从库升主失败: nodeId={}, reason={}", promotedNode.getId(), ex.getMessage(), ex);
+            if (runtimeStateManager != null) {
+                runtimeStateManager.markDegraded(reason + "_promotion_failed");
+            }
+            return false;
         }
     }
     public synchronized void handleOriginalMasterRecovery(String recoveredMasterId) {

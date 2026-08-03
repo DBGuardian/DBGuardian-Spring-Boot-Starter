@@ -297,8 +297,8 @@ public class DbGuardianBoot3AutoConfiguration {
         checker.setFailoverEnabled(properties.getRuntime().isPeriodicHealthCheckEnabled());
         checker.setGtidProtectionEnabled(properties.getGtidProtection().isEnabled());
         checker.setBlockSlaveReadsOnRisk(properties.getGtidProtection().isBlockSlaveReadsOnRisk());
+        checker.setAutoStart(false);
         gtidConsistencyInspector.setMaxAllowedLagSeconds(properties.getGtidProtection().getMaxAllowedLagSeconds());
-        checker.startHealthChecks();
         return checker;
     }
 
