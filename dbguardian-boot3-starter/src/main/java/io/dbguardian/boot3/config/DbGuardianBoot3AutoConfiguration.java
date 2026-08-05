@@ -13,6 +13,7 @@ import io.dbguardian.core.registry.DataSourceRegistry;
 import io.dbguardian.core.routing.DefaultRoutingPolicy;
 import io.dbguardian.spi.DatabaseDialect;
 import io.dbguardian.spring.DbGuardianRoutingDataSource;
+import io.dbguardian.spring.aspect.JpaDataSourceAdvisor;
 import io.dbguardian.spring.aspect.MyBatisPlusDataSourceAdvisor;
 import io.dbguardian.spring.aspect.MyBatisDataSourceAdvisor;
 import io.dbguardian.spring.coordination.DatasourceCoordinationService;
@@ -29,6 +30,7 @@ import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -172,6 +174,7 @@ public class DbGuardianBoot3AutoConfiguration {
     @Primary
     @ConditionalOnBean(name = "dataSource")
     @ConditionalOnMissingBean
+    @ConditionalOnMissingClass("org.springframework.orm.jpa.JpaTransactionManager")
     public DataSourceTransactionManager dataSourceTransactionManager(@Qualifier("dataSource") DataSource dataSource) {
         return new DataSourceTransactionManager(dataSource);
     }
@@ -243,6 +246,18 @@ public class DbGuardianBoot3AutoConfiguration {
     @ConditionalOnClass(name = "org.apache.ibatis.session.SqlSessionFactory")
     public MyBatisDataSourceAdvisor mybatisDataSourceAdvisor() {
         return new MyBatisDataSourceAdvisor();
+    }
+
+    /**
+     * Spring Data JPA Repository 拦截切面
+     *
+     * <p>仅在 classpath 中存在 Spring Data JPA 时注册</p>
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "org.springframework.data.jpa.repository.JpaRepository")
+    public JpaDataSourceAdvisor jpaDataSourceAdvisor() {
+        return new JpaDataSourceAdvisor();
     }
 
     @Bean

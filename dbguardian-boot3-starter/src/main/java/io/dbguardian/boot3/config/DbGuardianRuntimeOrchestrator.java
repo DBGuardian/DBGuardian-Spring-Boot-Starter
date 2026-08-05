@@ -250,7 +250,7 @@ public class DbGuardianRuntimeOrchestrator {
         }
     }
 
-    private void determineAndConfigureMasterSlave() {
+    private synchronized void determineAndConfigureMasterSlave() {
         if (!isMasterAvailable() || !isSlaveAvailable()) {
             runtimeStateManager.markMasterActive(resolveMasterNodeId(), resolveMasterNodeId(),
                     "replication_comparison_skipped_node_unavailable");
@@ -262,6 +262,10 @@ public class DbGuardianRuntimeOrchestrator {
         DataSourceWrapper slave = resolveConfiguredSlave();
         if (master == null || slave == null) {
             runtimeStateManager.markMasterActive(resolveMasterNodeId(), resolveReadNodeId(), "single_side_available_without_replication_chain");
+            return;
+        }
+        if (isStableMasterSlaveTopology(master, slave)) {
+            log.debug("主从拓扑稳定，跳过重复编排: master={}, slave={}", master.getId(), slave.getId());
             return;
         }
 
@@ -288,7 +292,11 @@ public class DbGuardianRuntimeOrchestrator {
             }
             disableReadOnly(master, "已关闭数据源只读模式");
             enableReadOnly(slave, "已启用数据源只读模式");
-            configureSlaveReplication(master, slave);
+            if (isReplicaReplicationHealthy(slave)) {
+                log.info("从库复制已健康，跳过重复配置: slave={}", slave.getId());
+            } else {
+                configureSlaveReplication(master, slave);
+            }
             runtimeStateManager.markMasterActive(master.getId(), slave.getId(), "startup_master_confirmed");
             log.info("数据源状态已恢复正常: MASTER_ACTIVE（两个数据源都可用）");
         } else {
@@ -458,6 +466,20 @@ public class DbGuardianRuntimeOrchestrator {
 
     private boolean isSlaveAvailable() {
         return dataSourceRegistry.getAvailableSlaveCount() > 0;
+    }
+
+    private boolean isStableMasterSlaveTopology(DataSourceWrapper master, DataSourceWrapper slave) {
+        if (master == null || slave == null || !isMasterAvailable() || !isSlaveAvailable()) {
+            return false;
+        }
+        ClusterRuntimeState state = runtimeStateManager.current();
+        if (state == null || !ClusterStatus.MASTER_ACTIVE.equals(state.getStatus())
+                || state.isDegraded() || state.isSlaveReadsBlocked()) {
+            return false;
+        }
+        return master.getId().equals(state.getActiveMasterId())
+                && slave.getId().equals(state.getActiveReadNodeId())
+                && isReplicaReplicationHealthy(slave);
     }
 
     private DataSourceWrapper resolveConfiguredMaster() {

@@ -1,12 +1,7 @@
 package io.dbguardian.spring.runtime;
 
 import io.dbguardian.core.ClusterStateMachine;
-import io.dbguardian.runtime.ClusterRuntimeState;
-import io.dbguardian.runtime.ClusterStatus;
-import io.dbguardian.runtime.DataSourceRole;
-import io.dbguardian.runtime.FailoverEvent;
-import io.dbguardian.runtime.FailoverEventType;
-import io.dbguardian.runtime.SlaveStatusEvent;
+import io.dbguardian.runtime.*;
 
 public class ClusterRuntimeStateManager {
 
@@ -156,7 +151,15 @@ public class ClusterRuntimeStateManager {
             return resolveActiveWriteLookupKey(state);
         }
         if (readOperation && state.getActiveReadNodeId() != null) {
-            return resolveNodeRole(state.getActiveReadNodeId());
+            NodeRuntimeState readNode = state.getNodeState(state.getActiveReadNodeId());
+            if (readNode != null && readNode.isAvailable()) {
+                return resolveNodeRole(state.getActiveReadNodeId());
+            }
+            // 从库不可用，降级到主库
+            if (state.getActiveMasterId() != null) {
+                return resolveActiveWriteLookupKey(state);
+            }
+            return "master";
         }
         if (state.getActiveMasterId() != null) {
             return resolveNodeRole(state.getActiveMasterId());

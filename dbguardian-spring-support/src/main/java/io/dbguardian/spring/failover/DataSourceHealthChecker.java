@@ -326,7 +326,7 @@ public class DataSourceHealthChecker {
             }
             String ioRunning = getNullableColumn(rs, dialect.getReplicaIoRunningColumn());
             String sqlRunning = getNullableColumn(rs, dialect.getReplicaSqlRunningColumn());
-            log.info("复制状态 - IO: {}, SQL: {}", ioRunning, sqlRunning);
+            log.debug("复制状态 - IO: {}, SQL: {}", ioRunning, sqlRunning);
             if (isPostgreSqlPrimaryRoleState(dialect, ioRunning, sqlRunning)) {
                 return true;
             }
