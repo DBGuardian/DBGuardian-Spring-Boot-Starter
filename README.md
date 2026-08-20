@@ -364,6 +364,17 @@ SELECT status FROM pg_stat_wal_receiver;
 └─────────────────┘         └─────────────────┘
 ```
 
+### Spring JDBC 路由
+
+`JdbcTemplate` 与 `NamedParameterJdbcTemplate` 会自动接入 DBGuardian 的读写路由：
+
+- 查询类方法（如 `query`、`queryForObject`、`queryForList`）进入从库读路由。
+- 更新类方法（如 `update`、`batchUpdate`、`execute`）进入主库写路由。
+- 每次 JDBC 调用结束后都会清理线程上下文，避免跨请求污染。
+- 该适配复用统一的 `DataSource` 和路由数据源，不绑定 MySQL、PostgreSQL 或 SQL Server 的具体实现。
+
+使用 Spring Boot 默认注入的 `JdbcTemplate` 即可，不需要额外开启注解或替换模板对象。
+
 ### 故障转移
 
 ```

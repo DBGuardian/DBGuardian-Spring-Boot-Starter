@@ -16,6 +16,7 @@ import io.dbguardian.spring.DbGuardianRoutingDataSource;
 import io.dbguardian.spring.aspect.JpaDataSourceAdvisor;
 import io.dbguardian.spring.aspect.MyBatisPlusDataSourceAdvisor;
 import io.dbguardian.spring.aspect.MyBatisDataSourceAdvisor;
+import io.dbguardian.spring.aspect.SpringJdbcDataSourceAdvisor;
 import io.dbguardian.spring.coordination.DatasourceCoordinationService;
 import io.dbguardian.spring.coordination.DatasourceStatusListener;
 import io.dbguardian.spring.failover.DataSourceHealthChecker;
@@ -245,6 +246,13 @@ public class DbGuardianBoot2AutoConfiguration {
     @ConditionalOnClass(name = "org.apache.ibatis.session.SqlSessionFactory")
     public MyBatisDataSourceAdvisor mybatisDataSourceAdvisor() {
         return new MyBatisDataSourceAdvisor();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "org.springframework.jdbc.core.JdbcOperations")
+    public SpringJdbcDataSourceAdvisor springJdbcDataSourceAdvisor() {
+        return new SpringJdbcDataSourceAdvisor();
     }
 
     /**
