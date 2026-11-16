@@ -371,7 +371,7 @@ SELECT status FROM pg_stat_wal_receiver;
 - 查询类方法（如 `query`、`queryForObject`、`queryForList`）进入从库读路由。
 - 更新类方法（如 `update`、`batchUpdate`、`execute`）进入主库写路由。
 - 每次 JDBC 调用结束后都会清理线程上下文，避免跨请求污染。
-- 该适配复用统一的 `DataSource` 和路由数据源，不绑定 MySQL、PostgreSQL 或 SQL Server 的具体实现。
+- 该适配复用统一的 `DataSource` 和路由数据源，不绑定具体数据库实现。
 
 使用 Spring Boot 默认注入的 `JdbcTemplate` 即可，不需要额外开启注解或替换模板对象。
 
@@ -459,7 +459,7 @@ MIT
 ## 定制化服务
 
 如果你的项目需要以下定制化需求，欢迎联系我们：
-- 专用数据库版本支持（如 PostgreSQL、Oracle、SQL Server 等）
+- 专用数据库版本支持（如 PostgreSQL、Oracle 等）
 - 更多 ORM 框架集成（如 JPA、Hibernate、JdbcTemplate 等）
 - 多主库、多从库等复杂架构支持
 - 其他定制化功能开发
