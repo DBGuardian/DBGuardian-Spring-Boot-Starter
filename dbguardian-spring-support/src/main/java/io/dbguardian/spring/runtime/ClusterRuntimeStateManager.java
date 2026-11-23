@@ -14,6 +14,11 @@ public class ClusterRuntimeStateManager {
     public synchronized void initialize(String clusterId, String masterNodeId, String readNodeId) {
         ClusterRuntimeState state = current();
         state.setClusterId(clusterId == null ? "default" : clusterId);
+        state.ensureNodeState(masterNodeId);
+        NodeRuntimeState readNode = state.ensureNodeState(readNodeId);
+        if (readNode != null && !readNodeId.equals(masterNodeId)) {
+            readNode.setConfiguredRole(DataSourceRole.SLAVE);
+        }
         stateMachine.markMasterActive(masterNodeId, readNodeId, "startup_initialized");
     }
 
@@ -95,6 +100,13 @@ public class ClusterRuntimeStateManager {
             stateMachine.markSlavePromoted(promotedNodeId, "redis_status_replayed");
             return;
         }
+        if (normalized.startsWith("FAILBACK:")) {
+            String[] parts = normalized.split(":", 3);
+            if (parts.length == 3) {
+                stateMachine.markMasterActive(parts[1], parts[2], "redis_failback_replayed");
+            }
+            return;
+        }
         if (normalized.startsWith("FAILOVER:")) {
             String[] parts = normalized.split(":");
             if (parts.length >= 3) {
@@ -168,26 +180,19 @@ public class ClusterRuntimeStateManager {
     }
 
     private String resolveActiveWriteLookupKey(ClusterRuntimeState state) {
-        if (state != null && ClusterStatus.SLAVE_PROMOTED.equals(state.getStatus())) {
-            return "slave";
-        }
         if (state == null || state.getActiveMasterId() == null) {
             return "master";
         }
-        if (current().getNodeState(state.getActiveMasterId()) == null) {
-            return "master";
-        }
-        return DataSourceRole.SLAVE.equals(current().getNodeState(state.getActiveMasterId()).getActiveRole()) ? "slave" : "master";
+        return resolveNodeRole(state.getActiveMasterId());
     }
 
     private String resolveNodeRole(String nodeId) {
-        if (nodeId == null) {
-            return "master";
+        // The routing data source keys refer to the configured pools, not their current DB roles.
+        if ("slave".equals(nodeId) || "master".equals(nodeId)) {
+            return nodeId;
         }
-        if (current().getNodeState(nodeId) == null) {
-            return "master";
-        }
-        return DataSourceRole.SLAVE.equals(current().getNodeState(nodeId).getActiveRole()) ? "slave" : "master";
+        NodeRuntimeState node = nodeId == null ? null : current().getNodeState(nodeId);
+        return node != null && DataSourceRole.SLAVE.equals(node.getConfiguredRole()) ? "slave" : "master";
     }
 
     private String sanitizeMessage(String message) {

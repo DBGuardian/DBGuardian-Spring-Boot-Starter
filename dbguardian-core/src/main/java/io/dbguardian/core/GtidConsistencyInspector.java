@@ -19,6 +19,10 @@ public class GtidConsistencyInspector {
                 && (!nodeState.isReplicationHealthy() || nodeState.getReplicationLagSeconds() > maxAllowedLagSeconds);
     }
 
+    public boolean exceedsLagLimit(long lagSeconds) {
+        return lagSeconds > maxAllowedLagSeconds;
+    }
+
     public boolean shouldBlockSlaveTraffic(ClusterRuntimeState runtimeState) {
         if (runtimeState == null) {
             return false;

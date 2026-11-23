@@ -314,6 +314,10 @@ public class DbGuardianBoot2AutoConfiguration {
         checker.setSlaveCheckIntervalSeconds(properties.getRuntime().getSlaveCheckIntervalSeconds());
         checker.setFailoverEnabled(properties.getRuntime().isPeriodicHealthCheckEnabled());
         checker.setGtidProtectionEnabled(properties.getGtidProtection().isEnabled());
+        if (properties.getMaster().getUrl() != null
+                && properties.getMaster().getUrl().regionMatches(true, 0, "jdbc:mariadb:", 0, 13)) {
+            checker.setAutoStart(false);
+        }
         checker.setBlockSlaveReadsOnRisk(properties.getGtidProtection().isBlockSlaveReadsOnRisk());
         gtidConsistencyInspector.setMaxAllowedLagSeconds(properties.getGtidProtection().getMaxAllowedLagSeconds());
         return checker;

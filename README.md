@@ -12,12 +12,7 @@
 
 Spring Boot 数据库高可用 Starter，提供读写分离、自动故障转移与降级启动能力。
 
-该仓库同时包含两个 Starter 模块：
-
-- `dbguardian-boot2-starter`：适用于 Spring Boot 2.7.x，Redis 使用 `spring.redis` 配置前缀。
-- `dbguardian-boot3-starter`：适用于 Spring Boot 3.x，Redis 使用 `spring.data.redis` 配置前缀。
-
-两个模块共用核心故障转移、路由和 PostgreSQL 恢复能力。
+支持 MySQL、PostgreSQL 和 MariaDB。请先选择与 Spring Boot 版本匹配的 Starter，再按数据库选择一份配置示例。
 
 ## 功能特性
 
@@ -52,71 +47,160 @@ Spring Boot 3.x：
 </dependency>
 ```
 
-### 2. 配置文件
+#### 数据库方言 `pom.xml` 配置示例
 
-以下示例使用 Spring Boot 2 的 Redis 前缀 `spring.redis`。Spring Boot 3 请将同一段 Redis 配置放在 `spring.data.redis` 下，其余数据源配置保持一致。
+按 Spring Boot 版本选择一个 Starter，再按数据库从下方选择一组「方言 + JDBC 驱动」依赖，一起放入应用 `pom.xml` 的 `<dependencies>` 中。方言与 Starter 使用相同版本。若 Spring Boot 未管理示例所用坐标的驱动版本（例如较早的 Spring Boot 2.7 小版本可能不管理 `com.mysql:mysql-connector-j`），请为该驱动依赖显式指定兼容的 `<version>`。
+
+**MySQL**
+
+```xml
+<dependency>
+    <groupId>io.dbguardian</groupId>
+    <artifactId>dbguardian-dialect-mysql</artifactId>
+    <version>1.0.0</version>
+</dependency>
+<dependency>
+    <groupId>com.mysql</groupId>
+    <artifactId>mysql-connector-j</artifactId>
+    <scope>runtime</scope>
+</dependency>
+```
+
+**PostgreSQL**
+
+```xml
+<dependency>
+    <groupId>io.dbguardian</groupId>
+    <artifactId>dbguardian-dialect-postgresql</artifactId>
+    <version>1.0.0</version>
+</dependency>
+<dependency>
+    <groupId>org.postgresql</groupId>
+    <artifactId>postgresql</artifactId>
+    <scope>runtime</scope>
+</dependency>
+```
+
+**MariaDB**
+
+```xml
+<dependency>
+    <groupId>io.dbguardian</groupId>
+    <artifactId>dbguardian-dialect-mariadb</artifactId>
+    <version>1.0.0</version>
+</dependency>
+<dependency>
+    <groupId>org.mariadb.jdbc</groupId>
+    <artifactId>mariadb-java-client</artifactId>
+    <scope>runtime</scope>
+</dependency>
+```
+
+### 2. 按数据库填写配置
+
+选择下面的一份示例写入 `application.yml`。替换节点地址和库名，并在启动前设置 `DBGUARDIAN_DB_USERNAME`、`DBGUARDIAN_DB_PASSWORD`、`DBGUARDIAN_REPLICATION_USER` 和 `DBGUARDIAN_REPLICATION_PASSWORD`。两个 JDBC URL 分别指向两个实际节点。示例假设数据库侧已建立主从复制。
+
+#### MySQL 配置示例
 
 ```yaml
 spring:
-  application:
-    name: your-app-name
-
-  # 允许循环依赖（DBGuardian 与 MyBatis-Plus 的数据源配置循环）
-  main:
-    allow-circular-references: true
-
-  # 主库数据源配置
   datasource:
     master:
-      url: jdbc:mysql://master-host:3306/mydb?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-      username: root
-      password: secret
+      url: jdbc:mysql://mysql-primary:3306/appdb
       driver-class-name: com.mysql.cj.jdbc.Driver
-      hikari:
-        maximum-pool-size: 20
-        minimum-idle: 5
-        connection-timeout: 30000
-        idle-timeout: 600000
-        max-lifetime: 1800000
-
-    # 从库数据源配置
+      username: ${DBGUARDIAN_DB_USERNAME}
+      password: ${DBGUARDIAN_DB_PASSWORD}
     slave:
-      url: jdbc:mysql://slave-host:3306/mydb?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-      username: root
-      password: secret
+      url: jdbc:mysql://mysql-replica:3306/appdb
       driver-class-name: com.mysql.cj.jdbc.Driver
-      hikari:
-        maximum-pool-size: 20
-        minimum-idle: 5
-        connection-timeout: 30000
-        idle-timeout: 600000
-        max-lifetime: 1800000
-
-    # 主从复制配置
+      username: ${DBGUARDIAN_DB_USERNAME}
+      password: ${DBGUARDIAN_DB_PASSWORD}
     replication:
-      master-host: master-host
-      master-port: 3306
-      master-user: repl
-      master-password: repl_secret
-      auto-reconnect: true
-
-    # 允许降级启动（数据库不可用时）
+      master-user: ${DBGUARDIAN_REPLICATION_USER}
+      master-password: ${DBGUARDIAN_REPLICATION_PASSWORD}
     allow-degraded-startup: true
-
-  # Redis配置（用于分布式协调）
-  redis:
-    host: redis-host
-    port: 6379
-    password: redis_password
-    database: 0
-    timeout: 10000ms
-    lettuce:
-      pool:
-        max-active: 50
-        max-wait: 3000ms
-        max-idle: 20
-        min-idle: 5
 ```
+
+#### PostgreSQL 配置示例
+
+下面以应用能在待恢复节点 `pg-a` 上本地执行 `pg_rewind` 为例。自动追赶要求恢复脚本和命令路径指向该节点上的实际文件，且执行账号具备操作 PostgreSQL 数据目录的权限。
+
+```yaml
+spring:
+  datasource:
+    master:
+      url: jdbc:postgresql://pg-a:5432/appdb
+      driver-class-name: org.postgresql.Driver
+      username: ${DBGUARDIAN_DB_USERNAME}
+      password: ${DBGUARDIAN_DB_PASSWORD}
+    slave:
+      url: jdbc:postgresql://pg-b:5432/appdb
+      driver-class-name: org.postgresql.Driver
+      username: ${DBGUARDIAN_DB_USERNAME}
+      password: ${DBGUARDIAN_DB_PASSWORD}
+    replication:
+      master-user: ${DBGUARDIAN_REPLICATION_USER}
+      master-password: ${DBGUARDIAN_REPLICATION_PASSWORD}
+    recovery:
+      enabled: true
+      auto-failback: true
+      postgresql:
+        enabled: true
+        keep-promoted-primary: true
+        data-directory: /var/lib/postgresql/16/main
+        config-file: /etc/postgresql/16/main/postgresql.conf
+        script-path: /opt/dbguardian/scripts/pg-rewind-recover.sh
+        pg-ctl-command: /usr/lib/postgresql/16/bin/pg_ctl
+        psql-command: /usr/lib/postgresql/16/bin/psql
+        pg-rewind-command: /usr/lib/postgresql/16/bin/pg_rewind
+        local-host: 127.0.0.1
+        local-port: 5432
+        local-database: postgres
+        startup-wait-seconds: 60
+        command-timeout-seconds: 900
+    allow-degraded-startup: true
+```
+
+`keep-promoted-primary: true` 保留故障期间升主的节点承接写入，原主追赶后作为从库。恢复脚本必须在待恢复数据库节点上执行；应用与数据库分开部署时，请参阅 [PostgreSQL 自动追赶说明](../DBGuardian-doc/doc/PostgreSQL自动追赶说明.md)配置远程执行或自动回切。恢复完成后，健康检查确认从库处于流复制状态（`streaming`），才恢复从库读路由。
+
+#### MariaDB 配置示例
+
+适用于 MariaDB 10.11+ 单主单从环境。请预先配置 GTID（全局事务标识）复制，并为两个节点设置不同的 `server_id`。
+
+```yaml
+spring:
+  datasource:
+    master:
+      url: jdbc:mariadb://mariadb-primary:3306/appdb?connectTimeout=3000&socketTimeout=10000
+      driver-class-name: org.mariadb.jdbc.Driver
+      username: ${DBGUARDIAN_DB_USERNAME}
+      password: ${DBGUARDIAN_DB_PASSWORD}
+    slave:
+      url: jdbc:mariadb://mariadb-replica:3306/appdb?connectTimeout=3000&socketTimeout=10000
+      driver-class-name: org.mariadb.jdbc.Driver
+      username: ${DBGUARDIAN_DB_USERNAME}
+      password: ${DBGUARDIAN_DB_PASSWORD}
+    replication:
+      master-user: ${DBGUARDIAN_REPLICATION_USER}
+      master-password: ${DBGUARDIAN_REPLICATION_PASSWORD}
+    recovery:
+      enabled: true
+      auto-failback: true
+      catchup-timeout-seconds: 300
+      catchup-check-interval-seconds: 2
+    gtid-protection:
+      enabled: true
+      block-slave-reads-on-risk: true
+      max-allowed-lag-seconds: 5
+    allow-degraded-startup: true
+```
+
+`auto-failback: true` 表示原主追平后尝试恢复原主写入。设为 `false` 时，升主节点继续承接写入，原主追平且复制健康后可承担读流量。所需权限、故障时的原主隔离与回切流程见 [MariaDB 方言使用说明](../DBGuardian-doc/doc/MariaDB方言使用说明.md)。
+
+#### 通用可选配置
+
+- **Redis 分布式协调**：多个应用实例需要同步节点状态时，添加 `spring-boot-starter-data-redis`。在 Spring Boot 2.7 的 `spring.redis` 或 Spring Boot 3.x 的 `spring.data.redis` 下设置 `host`、`port`、`password`、`database` 和 `timeout`。单实例可不配置 Redis。
+- **连接池**：如需调节 HikariCP，可在 `spring.datasource.master.hikari` 和 `spring.datasource.slave.hikari` 下分别设置 `maximum-pool-size`、`minimum-idle`、`connection-timeout`、`idle-timeout` 和 `max-lifetime`。
 
 ### 3. 自动使用
 
@@ -138,196 +222,6 @@ public class UserService {
     }
 }
 ```
-
-## 配置说明
-
-### 完整配置
-
-```yaml
-spring:
-  application:
-    name: your-app-name
-
-  # 允许循环依赖（DBGuardian 与 MyBatis-Plus 的数据源配置循环）
-  main:
-    allow-circular-references: true
-
-  datasource:
-    # 允许降级启动
-    allow-degraded-startup: true
-
-    # 主库配置
-    master:
-      url: jdbc:mysql://localhost:3306/test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-      username: root
-      password: password
-      driver-class-name: com.mysql.cj.jdbc.Driver
-      hikari:
-        maximum-pool-size: 20
-        minimum-idle: 5
-        connection-timeout: 30000
-        idle-timeout: 600000
-        max-lifetime: 1800000
-
-    # 从库配置
-    slave:
-      url: jdbc:mysql://localhost:3306/test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-      username: root
-      password: password
-      driver-class-name: com.mysql.cj.jdbc.Driver
-      hikari:
-        maximum-pool-size: 20
-        minimum-idle: 5
-        connection-timeout: 30000
-        idle-timeout: 600000
-        max-lifetime: 1800000
-
-    # 主从复制配置
-    replication:
-      master-host: localhost
-      master-port: 3306
-      master-user: repl
-      master-password: repl_password
-      auto-reconnect: true
-
-    # 允许降级启动（数据库不可用时）
-    allow-degraded-startup: true
-
-  # Redis配置（分布式协调）
-  redis:
-    host: localhost
-    port: 6379
-    password:
-    database: 0
-    timeout: 10000ms
-```
-
-## PostgreSQL 自动追赶、远程执行与读路由恢复
-
-PostgreSQL 在从库提升为主库后，原主通常已处于不同的时间线，不能通过 JDBC 复制 SQL 直接重新挂接。DBGuardian 会在故障恢复阶段调用 `pg_rewind`，使待恢复节点追赶当前主库并作为 standby 启动。
-
-恢复方向始终是：**待恢复节点跟随当前主库**。`pg_rewind` 脚本必须在待恢复 PostgreSQL 节点本机执行：应用与数据库同机时可本地执行；分离部署时，应通过 SSH 或其他远程代理将脚本调度到该节点。
-
-读路由由异步健康检查控制：
-
-1. 从库不可用或复制异常时，将其移出可读从库池，读请求改路由到主库。
-2. `pg_rewind` 或复制重建成功不代表从库立即可读，读请求仍保持在主库。
-3. 后续健康检查确认 `pg_stat_wal_receiver.status = streaming` 后，才将从库加回读池并恢复从库读路由。
-
-`keep-promoted-primary=true`（默认）表示保留故障期间升主的节点；旧主追赶后成为它的从库。设置为 `false` 时，旧主追平后会执行回切：旧主升回主库，当前主再追赶并回挂到旧主。
-
-### 本地执行示例
-
-```yaml
-spring:
-  datasource:
-    master:
-      url: jdbc:postgresql://pg-a:5432/appdb
-      username: app_user
-      password: ${DBGUARDIAN_DB_PASSWORD}
-      driver-class-name: org.postgresql.Driver
-    slave:
-      url: jdbc:postgresql://pg-b:5432/appdb
-      username: app_user
-      password: ${DBGUARDIAN_DB_PASSWORD}
-      driver-class-name: org.postgresql.Driver
-    replication:
-      master-user: repl_user
-      master-password: ${DBGUARDIAN_REPL_PASSWORD}
-    recovery:
-      enabled: true
-      auto-failback: true
-      postgresql:
-        enabled: true
-        keep-promoted-primary: true
-        # 以下路径和本地连接均属于待恢复节点 pg-a。
-        data-directory: /var/lib/postgresql/16/main
-        config-file: /etc/postgresql/16/main/postgresql.conf
-        script-path: /opt/dbguardian/scripts/pg-rewind-recover.sh
-        pg-ctl-command: /usr/lib/postgresql/16/bin/pg_ctl
-        psql-command: /usr/lib/postgresql/16/bin/psql
-        pg-rewind-command: /usr/lib/postgresql/16/bin/pg_rewind
-        local-host: 127.0.0.1
-        local-port: 5432
-        local-database: appdb
-        primary-slot-name: appdb_slot
-        extra-primary-conn-info: "target_session_attrs=read-write"
-        startup-wait-seconds: 60
-        command-timeout-seconds: 900
-```
-
-此模式要求应用进程能够访问 `pg-a` 的数据目录，并有权限以 PostgreSQL 系统用户执行脚本和相关工具。
-
-### 远程执行与回切示例
-
-```yaml
-spring:
-  datasource:
-    replication:
-      master-host: 192.168.3.150
-      master-port: 5432
-      master-user: repl
-      master-password: ${DBGUARDIAN_REPL_PASSWORD}
-      auto-reconnect: true
-    recovery:
-      enabled: true
-      auto-failback: true
-      postgresql:
-        enabled: true
-        keep-promoted-primary: false
-
-        # 原主恢复为从库时，在原主节点 192.168.3.150 执行。
-        data-directory: /var/lib/postgresql/16/main
-        config-file: /etc/postgresql/16/main/postgresql.conf
-        script-path: /opt/dbguardian/scripts/pg-rewind-recover.sh
-        remote-execution-enabled: true
-        remote-executor-command: >
-          ssh ubuntu@192.168.3.150 "sudo -n -u postgres env {env_sh} bash {script_path_sh}"
-        remote-executor-password: ${DBGUARDIAN_SSH_PASSWORD}
-        pg-ctl-command: /usr/lib/postgresql/16/bin/pg_ctl
-        psql-command: /usr/lib/postgresql/16/bin/psql
-        pg-rewind-command: /usr/lib/postgresql/16/bin/pg_rewind
-        local-host: 127.0.0.1
-        local-port: 5432
-        local-database: appdb
-        primary-slot-name: appdb_slot
-        extra-primary-conn-info: "target_session_attrs=read-write"
-        startup-wait-seconds: 60
-        command-timeout-seconds: 900
-
-        # 回切时恢复从库，在恢复从库节点 192.168.3.151 执行。
-        # failback-* 是历史命名，当前代表恢复从库一侧的执行配置。
-        failback-data-directory: /var/lib/postgresql/16/main
-        failback-config-file: /etc/postgresql/16/main/postgresql.conf
-        failback-script-path: /opt/dbguardian/scripts/pg-rewind-recover.sh
-        failback-remote-execution-enabled: true
-        failback-remote-executor-command: >
-          ssh ubuntu@192.168.3.151 "sudo -n -u postgres env {env_sh} bash {script_path_sh}"
-        failback-remote-executor-password: ${DBGUARDIAN_SSH_PASSWORD}
-        failback-pg-ctl-command: /usr/lib/postgresql/16/bin/pg_ctl
-        failback-psql-command: /usr/lib/postgresql/16/bin/psql
-        failback-pg-rewind-command: /usr/lib/postgresql/16/bin/pg_rewind
-        failback-local-host: 127.0.0.1
-        failback-local-port: 5432
-        failback-local-database: appdb
-        failback-primary-slot-name: appdb_slot
-        failback-extra-primary-conn-info: "target_session_attrs=read-write"
-        failback-startup-wait-seconds: 60
-        failback-command-timeout-seconds: 900
-```
-
-远程命令模板中的 `{env_sh}` 和 `{script_path_sh}` 必须原样保留，由执行器在运行时替换。`remote-executor-password` 只用于 SSH 登录，不能作为 `sudo` 密码；生产环境应优先使用 SSH 密钥，并为专用 SSH 用户配置仅允许恢复脚本的 `sudo -n -u postgres` 权限。
-
-从库恢复完成后，可在该节点确认状态：
-
-```sql
-SELECT pg_is_in_recovery();
-SELECT status FROM pg_stat_wal_receiver;
-```
-
-只有 `pg_is_in_recovery()` 为 `true` 且 `status` 为 `streaming`，DBGuardian 的后续健康检查才会恢复从库读路由。
-
-完整部署、权限和故障排查说明见 `DBGuardian-doc/doc/PostgreSQL自动追赶说明.md`。
 
 ## 工作原理
 
@@ -396,7 +290,7 @@ SELECT status FROM pg_stat_wal_receiver;
 - Spring Boot 2.7.x 使用 `dbguardian-boot2-starter`
 - Spring Boot 3.x 使用 `dbguardian-boot3-starter`
 - Java 8 / 11 / 17 / 21，按 Spring Boot 版本选择兼容组合
-- MySQL 5.7+ / 8.0+ 或 PostgreSQL
+- MySQL 5.7+ / 8.0+、PostgreSQL 或 MariaDB 10.11+
 - Redis 6.x+（可选，用于分布式协调）
 
 ## 测试
@@ -409,27 +303,7 @@ mvn test
 
 ### 本地集成测试
 
-1. 确保 MySQL 主从复制已配置
-2. 配置 `src/test/resources/application.yml`：
-```yaml
-spring:
-  datasource:
-    master:
-      url: jdbc:mysql://localhost:3306/test
-      username: root
-      password: your_password
-    slave:
-      url: jdbc:mysql://localhost:3306/test
-      username: root
-      password: your_password
-    replication:
-      master-user: repl
-      master-password: repl_password
-    allow-degraded-startup: true
-  redis:
-    host: localhost
-    port: 6379
-```
+在独立测试环境准备所选数据库的主从复制，按[配置示例](#2-按数据库填写配置)启动应用。可从[测试项目总览](../DBGuardian-Test/README.md)选择对应示例，并按其说明验证查询、写入和故障切换。
 
 ### 在已有项目中测试
 

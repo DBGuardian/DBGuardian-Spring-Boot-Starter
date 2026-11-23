@@ -16,6 +16,7 @@
         <module>dbguardian-api</module>
         <module>dbguardian-core</module>
         <module>dbguardian-dialect-mysql</module>
+        <module>dbguardian-dialect-mariadb</module>
         <module>dbguardian-dialect-postgresql</module>
         <module>dbguardian-spring-support</module>
         <module>dbguardian-boot2-starter</module>

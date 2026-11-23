@@ -157,6 +157,10 @@ public class DatasourceCoordinationService {
         }
     }
 
+    public void broadcastFailbackCompleted(String primaryId, String replicaId) {
+        broadcastStatusChange("FAILBACK:" + primaryId + ":" + replicaId);
+    }
+
     public void broadcastRecoveryStage(String stage, String sourceNodeId, String targetNodeId, String reason) {
         if (redisTemplate == null) {
             return;

@@ -4,6 +4,8 @@ import io.dbguardian.core.GtidConsistencyInspector;
 import io.dbguardian.core.datasource.DataSourceWrapper;
 import io.dbguardian.core.registry.DataSourceRegistry;
 import io.dbguardian.spi.DatabaseDialect;
+import io.dbguardian.spi.GtidDatabaseDialect;
+import io.dbguardian.spi.GtidDatabaseDialect.PositionOrder;
 import io.dbguardian.runtime.ClusterRuntimeState;
 import io.dbguardian.runtime.ClusterStatus;
 import io.dbguardian.spring.runtime.ClusterRuntimeStateManager;
@@ -88,6 +90,11 @@ public class DataSourceHealthChecker {
             return;
         }
         for (DataSourceWrapper master : registry.getAllMasters()) {
+            DatabaseDialect dialect = resolveDialect(master);
+            if (dialect instanceof GtidDatabaseDialect && runtimeStateManager != null) {
+                checkGtidNode(master, (GtidDatabaseDialect) dialect);
+                continue;
+            }
             boolean healthy = isHealthy(master);
             boolean wasAvailable = registry.getAvailableMasters().stream().anyMatch(item -> item.getId().equals(master.getId()));
             if (healthy) {
@@ -130,6 +137,11 @@ public class DataSourceHealthChecker {
             return;
         }
         for (DataSourceWrapper slave : registry.getAllSlaves()) {
+            DatabaseDialect dialect = resolveDialect(slave);
+            if (dialect instanceof GtidDatabaseDialect && runtimeStateManager != null) {
+                checkGtidNode(slave, (GtidDatabaseDialect) dialect);
+                continue;
+            }
             boolean promotedActiveMaster = isPromotedActiveMaster(slave.getId());
             boolean healthy = isHealthy(slave);
             boolean replicationHealthy = promotedActiveMaster || (healthy && checkReplicationHealthy(slave));
@@ -169,6 +181,143 @@ public class DataSourceHealthChecker {
                     failoverController.handleSlaveFailure(slave.getId());
                 }
             }
+        }
+    }
+
+    private void checkGtidNode(DataSourceWrapper node, GtidDatabaseDialect dialect) {
+        boolean reachable = isHealthy(node);
+        synchronized (failoverController) {
+            ClusterRuntimeState state = runtimeStateManager.current();
+            if (node.getId().equals(state.getActiveMasterId())) {
+                updateGtidAvailability(node, reachable);
+                if (!reachable && state.getPendingOriginalMasterId() == null) {
+                    failoverController.handleMasterFailure(node.getId());
+                }
+            } else if (node.getId().equals(state.getPendingOriginalMasterId())) {
+                updateGtidAvailability(node, reachable);
+                if (reachable) {
+                    failoverController.handleOriginalMasterRecovery(node.getId());
+                }
+            } else if (ClusterStatus.MASTER_ACTIVE.equals(state.getStatus()) && !state.isRecoveryInProgress()) {
+                checkGtidReplica(node, reachable, dialect);
+            } else if (!reachable) {
+                updateGtidAvailability(node, false);
+            }
+        }
+    }
+
+    private void updateGtidAvailability(DataSourceWrapper node, boolean available) {
+        if (registry.getMaster(node.getId()) != null) {
+            registry.updateMasterAvailability(node.getId(), available);
+        } else {
+            registry.updateSlaveAvailability(node.getId(), available);
+        }
+    }
+
+    private void checkGtidReplica(DataSourceWrapper replica, boolean reachable, GtidDatabaseDialect dialect) {
+        ClusterRuntimeState state = runtimeStateManager.current();
+        DataSourceWrapper source = resolveCurrentMasterForSlaveCheck(state, replica.getId());
+        if (source == null || !source.isAvailable()) {
+            if (!reachable) {
+                updateGtidAvailability(replica, false);
+            }
+            return;
+        }
+        boolean healthy = false;
+        long lag = Long.MAX_VALUE;
+        boolean positionRisk = false;
+        boolean readOnly = false;
+        Object channelStatus = "replica unreachable";
+        if (reachable) {
+            try (Connection connection = openHealthCheckConnection(replica)) {
+                GtidReplication.ChannelStatus channel = GtidReplication.readChannelStatus(connection, dialect, source);
+                channelStatus = channel;
+                healthy = channel.running;
+                lag = channel.lagSeconds;
+                if (healthy) {
+                    try {
+                        readOnly = GtidReplication.isGlobalReadOnly(connection, dialect);
+                    } catch (SQLException ex) {
+                        log.warn("无法确认从库全局只读: replica={}, sqlState={}, errorCode={}",
+                                replica.getId(), ex.getSQLState(), ex.getErrorCode());
+                    }
+                }
+                if (gtidProtectionEnabled) {
+                    String replicaPosition;
+                    try (Statement statement = connection.createStatement()) {
+                        replicaPosition = GtidReplication.readPosition(statement, dialect);
+                    }
+                    String sourcePosition;
+                    try (Connection sourceConnection = openHealthCheckConnection(source);
+                         Statement statement = sourceConnection.createStatement()) {
+                        sourcePosition = GtidReplication.readPosition(statement, dialect);
+                    } catch (SQLException ex) {
+                        // The writer may be going down; preserve the last known replica eligibility.
+                        log.debug("跳过 GTID 位点比较: source={}, replica={}, sqlState={}, errorCode={}",
+                                source.getId(), replica.getId(), ex.getSQLState(), ex.getErrorCode());
+                        return;
+                    }
+                    PositionOrder order = dialect.comparePositions(replicaPosition, sourcePosition);
+                    positionRisk = order != PositionOrder.EQUAL && order != PositionOrder.BEHIND;
+                    if (positionRisk) {
+                        log.warn("GTID 复制位点未知或从库含额外事务，暂停从读: replica={}, decision={}", replica.getId(), order);
+                    }
+                }
+            } catch (SQLException ex) {
+                healthy = false;
+                channelStatus = "status unavailable (sqlState=" + ex.getSQLState() + ", errorCode=" + ex.getErrorCode() + ")";
+            } catch (IllegalArgumentException ex) {
+                healthy = false;
+                channelStatus = "invalid source configuration";
+            }
+        }
+        if (healthy && !readOnly) {
+            readOnly = failoverController.restoreGtidReplicaReadOnly(replica, source, dialect);
+            // A concurrent role switch may have made this observation obsolete.
+            ClusterRuntimeState current = runtimeStateManager.current();
+            if (!source.getId().equals(current.getActiveMasterId()) || current.isRecoveryInProgress()) {
+                return;
+            }
+        }
+        boolean wasAvailable = replica.isAvailable();
+        boolean lagRisk = gtidProtectionEnabled && blockSlaveReadsOnRisk && gtidConsistencyInspector != null
+                && gtidConsistencyInspector.exceedsLagLimit(lag);
+        boolean admitted = reachable && healthy && readOnly && !positionRisk && !lagRisk;
+        if (admitted != wasAvailable) {
+            if (admitted) {
+                log.info("GTID 复制检查已恢复从读: source={}, replica={}, {}", source.getId(), replica.getId(), channelStatus);
+            } else {
+                log.warn("GTID 复制检查暂停从读: source={}, replica={}, readOnly={}, positionRisk={}, lagRisk={}, {}",
+                        source.getId(), replica.getId(), readOnly, positionRisk, lagRisk, channelStatus);
+            }
+        }
+        log.debug("GTID 复制状态（定时检查）: source={}, replica={}, readOnly={}, readEligible={}, {}",
+                source.getId(), replica.getId(), readOnly, admitted, channelStatus);
+        updateGtidAvailability(replica, admitted);
+        if (admitted) {
+            replica.healthCheckSuccess();
+            if (!wasAvailable || (state != null && state.isSlaveReadsBlocked())) {
+                failoverController.handleSlaveRecovery(replica.getId());
+            }
+        } else {
+            replica.healthCheckFailed();
+            if (wasAvailable) {
+                failoverController.handleSlaveFailure(replica.getId());
+            }
+            if (reachable && !healthy && !positionRisk) {
+                failoverController.recoverSlaveReplication(replica.getId());
+            }
+        }
+        if (runtimeStateManager != null) {
+            String detail = "gtid_replication_observed";
+            if (positionRisk) {
+                detail = GtidReplication.POSITION_RISK;
+            } else if (healthy && !readOnly) {
+                detail = "gtid_replica_read_only_unconfirmed";
+            } else if (lagRisk) {
+                detail = "gtid_lag_risk";
+            }
+            runtimeStateManager.updateSlaveStatus(replica.getId(), admitted, healthy, lag, detail);
         }
     }
 
@@ -310,7 +459,7 @@ public class DataSourceHealthChecker {
             return false;
         }
         String url = dataSourceWrapper.getUrl().toLowerCase();
-        return url.startsWith("jdbc:mysql:") || url.startsWith("jdbc:postgresql:");
+        return url.startsWith("jdbc:mysql:") || url.startsWith("jdbc:postgresql:") || url.startsWith("jdbc:mariadb:");
     }
 
     private boolean checkReplicationHealthy(DataSourceWrapper slave) {

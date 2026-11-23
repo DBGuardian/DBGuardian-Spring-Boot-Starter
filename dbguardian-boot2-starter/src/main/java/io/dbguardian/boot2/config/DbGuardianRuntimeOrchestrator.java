@@ -6,6 +6,7 @@ import io.dbguardian.core.TopologyRegistry;
 import io.dbguardian.core.datasource.DataSourceWrapper;
 import io.dbguardian.core.registry.DataSourceRegistry;
 import io.dbguardian.spi.DatabaseDialect;
+import io.dbguardian.spi.GtidDatabaseDialect;
 import io.dbguardian.runtime.ClusterRuntimeState;
 import io.dbguardian.runtime.ClusterStatus;
 import io.dbguardian.spring.coordination.DatasourceCoordinationService;
@@ -66,7 +67,9 @@ public class DbGuardianRuntimeOrchestrator {
     @PostConstruct
     public void initializeOnStartup() {
         failoverOrchestrator.initialize(topologyRegistry.getClusterModel());
-        runtimeStateManager.initialize(dbGuardianProperties.getClusterId(), resolveMasterNodeId(), resolveReadNodeId());
+        boolean orderedGtid = resolveDialect(resolveConfiguredMaster()) instanceof GtidDatabaseDialect;
+        runtimeStateManager.initialize(dbGuardianProperties.getClusterId(), resolveMasterNodeId(),
+                orderedGtid ? resolveMasterNodeId() : resolveReadNodeId());
         initializeDatabaseAvailability();
         refreshRuntimeState("startup_initialized");
         log.info("DBGuardian 启动期运行态已初始化: status={}", runtimeStateManager.current().getStatus());
@@ -80,6 +83,9 @@ public class DbGuardianRuntimeOrchestrator {
         }
         refreshRuntimeState("application_ready_recheck");
         ensureCoordinationInitializedAndSync();
+        if (resolveDialect(resolveConfiguredMaster()) instanceof GtidDatabaseDialect) {
+            dataSourceHealthChecker.startHealthChecksAfterInitialization();
+        }
         log.info("=== 最终数据源状态: {}, 主库: {}, 从库: {} ===",
                 runtimeStateManager.current().getStatus(),
                 isMasterAvailable() ? "可用" : "不可用",
@@ -100,6 +106,13 @@ public class DbGuardianRuntimeOrchestrator {
     private void refreshRuntimeState(String reason) {
         ClusterRuntimeState currentState = runtimeStateManager.current();
         if (attemptOriginalMasterRecovery(reason, currentState)) {
+            return;
+        }
+        DataSourceWrapper configuredSlave = resolveConfiguredSlave();
+        if (resolveDialect(resolveConfiguredMaster()) instanceof GtidDatabaseDialect
+                && (currentState.getPendingOriginalMasterId() != null
+                || (configuredSlave != null && configuredSlave.getId().equals(currentState.getActiveMasterId())))) {
+            // Health checks use the physical writer/replica roles once the configured replica has been promoted.
             return;
         }
 
@@ -150,7 +163,9 @@ public class DbGuardianRuntimeOrchestrator {
     }
 
     private boolean attemptOriginalMasterRecovery(String reason, ClusterRuntimeState state) {
-        if (!dataSourceProperties.getRecovery().isEnabled() || !dataSourceProperties.getRecovery().isAutoFailback()) {
+        if (!dataSourceProperties.getRecovery().isEnabled()
+                || (!dataSourceProperties.getRecovery().isAutoFailback()
+                && !(resolveDialect(resolveConfiguredMaster()) instanceof GtidDatabaseDialect))) {
             log.debug("跳过原主恢复闭环: reason={}, recoveryEnabled={}, autoFailback={}",
                     reason,
                     dataSourceProperties.getRecovery().isEnabled(),
@@ -201,10 +216,11 @@ public class DbGuardianRuntimeOrchestrator {
         if (state == null || state.getPendingOriginalMasterId() == null) {
             return false;
         }
-        DataSourceWrapper originalMaster = dataSourceRegistry.getMaster(state.getPendingOriginalMasterId());
-        return originalMaster != null
-                && dataSourceRegistry.getAvailableMasters().stream()
-                .anyMatch(node -> state.getPendingOriginalMasterId().equals(node.getId()));
+        DataSourceWrapper recoveringNode = dataSourceRegistry.getMaster(state.getPendingOriginalMasterId());
+        if (recoveringNode == null && resolveDialect(resolveConfiguredMaster()) instanceof GtidDatabaseDialect) {
+            recoveringNode = dataSourceRegistry.getSlave(state.getPendingOriginalMasterId());
+        }
+        return recoveringNode != null && recoveringNode.isAvailable();
     }
     private boolean isRemotePostgreSqlRecoveryPending(ClusterRuntimeState state) {
         if (state == null || !ClusterStatus.SLAVE_PROMOTED.equals(state.getStatus())) {
@@ -220,7 +236,7 @@ public class DbGuardianRuntimeOrchestrator {
 
     private void recoverOriginalMasterAndRestoreReplication(String reason) {
         log.info("调用故障转移控制器执行原主恢复闭环: reason={}", reason);
-        if (!failoverController.recoverOriginalMasterAndRestoreReplication(reason)) {
+        if (!failoverController.recoverOriginalMasterAndRestoreReplication(reason, dataSourceProperties.getRecovery().isAutoFailback())) {
             log.warn("原主恢复闭环触发失败: reason={}", reason);
         }
     }
@@ -241,6 +257,13 @@ public class DbGuardianRuntimeOrchestrator {
         }
         if (isStableMasterSlaveTopology(master, slave)) {
             log.debug("主从拓扑稳定，跳过重复编排: master={}, slave={}", master.getId(), slave.getId());
+            return;
+        }
+
+        DatabaseDialect dialect = resolveDialect(master);
+        if (dialect instanceof GtidDatabaseDialect) {
+            failoverController.reconcileGtidTopology(master, slave, (GtidDatabaseDialect) dialect,
+                    dataSourceProperties.getRecovery().isEnabled(), dataSourceProperties.getRecovery().isAutoFailback());
             return;
         }
 
@@ -347,6 +370,11 @@ public class DbGuardianRuntimeOrchestrator {
             return;
         }
         coordinationService.registerAsMaster(coordinationService.getInstanceId());
+        if (resolveDialect(resolveConfiguredMaster()) instanceof GtidDatabaseDialect) {
+            // The controller publishes transitions with node IDs. A bare NORMAL would clear
+            // a pending recovery on peers without identifying the active writer.
+            return;
+        }
         ClusterStatus currentStatus = runtimeStateManager.current().getStatus();
         if (ClusterStatus.SLAVE_PROMOTED.equals(currentStatus)) {
             coordinationService.setMasterStatus(DatasourceCoordinationService.STATUS_SLAVE_PROMOTED);
@@ -403,7 +431,7 @@ public class DbGuardianRuntimeOrchestrator {
             return false;
         }
         String url = dataSource.getUrl().toLowerCase();
-        return url.startsWith("jdbc:mysql:") || url.startsWith("jdbc:postgresql:");
+        return url.startsWith("jdbc:mysql:") || url.startsWith("jdbc:postgresql:") || url.startsWith("jdbc:mariadb:");
     }
 
     private Connection openDirectOrPoolConnection(DataSourceWrapper dataSource) throws SQLException {

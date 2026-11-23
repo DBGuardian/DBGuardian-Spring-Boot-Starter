@@ -6,8 +6,11 @@ import io.dbguardian.core.recovery.DatabaseRecoverySettings;
 import io.dbguardian.core.recovery.DialectRecoveryContext;
 import io.dbguardian.core.registry.DataSourceRegistry;
 import io.dbguardian.spi.DatabaseDialect;
+import io.dbguardian.spi.GtidDatabaseDialect;
+import io.dbguardian.spi.GtidDatabaseDialect.PositionOrder;
 import io.dbguardian.runtime.ClusterRuntimeState;
 import io.dbguardian.runtime.ClusterStatus;
+import io.dbguardian.runtime.NodeRuntimeState;
 import io.dbguardian.spring.coordination.DatasourceCoordinationService;
 import io.dbguardian.spring.runtime.ClusterRuntimeStateManager;
 import org.slf4j.Logger;
@@ -73,8 +76,15 @@ public class FailoverController {
                 log.warn("协调服务不可用，降级为本地故障转移执行: failedMasterId={}", failedMasterId);
             }
             try {
-                List<DataSourceWrapper> availableSlaves = registry.getAvailableSlaves().stream()
+                DatabaseDialect failedDialect = resolveDialect(resolveNodeById(failedMasterId));
+                List<DataSourceWrapper> candidates = registry.getAvailableSlaves();
+                if (failedDialect instanceof GtidDatabaseDialect && registry.getSlave(failedMasterId) != null) {
+                    // After a no-failback recovery, the configured primary is the actual replica.
+                    candidates.addAll(registry.getAvailableMasters());
+                }
+                List<DataSourceWrapper> availableSlaves = candidates.stream()
                         .filter(wrapper -> !wrapper.getId().equals(failedMasterId))
+                        .filter(wrapper -> isEligiblePromotionCandidate(wrapper, failedDialect))
                         .collect(Collectors.toList());
                 if (availableSlaves.isEmpty()) {
                     if (runtimeStateManager != null) {
@@ -97,6 +107,19 @@ public class FailoverController {
         }
     }
 
+    private boolean isEligiblePromotionCandidate(DataSourceWrapper candidate, DatabaseDialect failedDialect) {
+        DatabaseDialect candidateDialect = resolveDialect(candidate);
+        if (!(failedDialect instanceof GtidDatabaseDialect) && !(candidateDialect instanceof GtidDatabaseDialect)) {
+            return true;
+        }
+        if (failedDialect != null && (candidateDialect == null
+                || !failedDialect.getDatabaseType().equalsIgnoreCase(candidateDialect.getDatabaseType()))) {
+            return false;
+        }
+        NodeRuntimeState node = runtimeStateManager == null ? null : runtimeStateManager.current().getNodeState(candidate.getId());
+        return node == null || !GtidReplication.POSITION_RISK.equals(node.getLastReplicationError());
+    }
+
     public synchronized boolean promoteStartupSlaveToPrimary(DataSourceWrapper promotedNode,
                                                               String originalMasterId,
                                                               String reason) {
@@ -111,6 +134,9 @@ public class FailoverController {
                 runtimeStateManager.markSlavePromoted(promotedNode.getId(), originalMasterId, reason);
             }
             if (coordinationService != null && coordinationService.isHealthy()) {
+                if (resolveDialect(promotedNode) instanceof GtidDatabaseDialect) {
+                    coordinationService.broadcastFailoverEvent(originalMasterId, promotedNode.getId());
+                }
                 coordinationService.setMasterStatus(DatasourceCoordinationService.STATUS_SLAVE_PROMOTED);
             }
             log.warn("启动期从库已升为主库，跳过失联原主操作: promotedMaster={}, originalMaster={}",
@@ -142,6 +168,17 @@ public class FailoverController {
             return;
         }
         String activeMasterId = runtimeStateManager.current().getActiveMasterId();
+        DataSourceWrapper recoveredMaster = resolveNodeById(recoveredMasterId);
+        DatabaseDialect dialect = resolveDialect(recoveredMaster);
+        if (dialect instanceof GtidDatabaseDialect) {
+            try {
+                setReadOnly(recoveredMaster, (GtidDatabaseDialect) dialect, true);
+            } catch (SQLException ex) {
+                log.warn("原主恢复后无法设置只读，暂不开始 GTID 追赶: nodeId={}, reason={}",
+                        recoveredMasterId, ex.getMessage());
+                return;
+            }
+        }
         runtimeStateManager.moveToRecoveryStage(
                 ClusterStatus.RECOVERING_ORIGINAL_MASTER,
                 recoveredMasterId,
@@ -159,7 +196,11 @@ public class FailoverController {
         log.info("检测到原主恢复，已进入恢复编排入口: originalMaster={}, currentMaster={}", recoveredMasterId, activeMasterId);
     }
 
-    public synchronized boolean recoverOriginalMasterAndRestoreReplication(String reason) {
+    public boolean recoverOriginalMasterAndRestoreReplication(String reason) {
+        return recoverOriginalMasterAndRestoreReplication(reason, true);
+    }
+
+    public synchronized boolean recoverOriginalMasterAndRestoreReplication(String reason, boolean autoFailback) {
         if (runtimeStateManager == null) {
             log.warn("恢复原主流程跳过: runtimeStateManager 未初始化, reason={}", reason);
             return false;
@@ -193,6 +234,19 @@ public class FailoverController {
         }
 
         DatabaseDialect originalMasterDialect = resolveDialect(originalMaster);
+        if (originalMasterDialect instanceof GtidDatabaseDialect) {
+            boolean coordinated = coordinationService != null && coordinationService.isHealthy();
+            if (coordinated && !coordinationService.tryAcquireFailoverLock(60L + 2L * Math.max(0, catchupTimeoutSeconds))) {
+                return false;
+            }
+            try {
+                return recoverGtidPrimary(originalMaster, promotedMaster, (GtidDatabaseDialect) originalMasterDialect, reason, autoFailback);
+            } finally {
+                if (coordinated) {
+                    coordinationService.releaseFailoverLock();
+                }
+            }
+        }
         ClusterStatus currentStatus;
         if (state == null) {
             currentStatus = null;
@@ -277,6 +331,230 @@ public class FailoverController {
         return true;
     }
 
+    /** Reconcile the configured pair using the dialect's position ordering, not GTID string counts. */
+    public synchronized void reconcileGtidTopology(DataSourceWrapper master, DataSourceWrapper replica,
+                                                   GtidDatabaseDialect dialect, boolean autoFailback) {
+        reconcileGtidTopology(master, replica, dialect, true, autoFailback);
+    }
+
+    public synchronized void reconcileGtidTopology(DataSourceWrapper master, DataSourceWrapper replica,
+                                                   GtidDatabaseDialect dialect, boolean recoveryEnabled, boolean autoFailback) {
+        try {
+            DatabaseDialect replicaDialect = resolveDialect(replica);
+            if (!(replicaDialect instanceof GtidDatabaseDialect)
+                    || !dialect.getDatabaseType().equalsIgnoreCase(replicaDialect.getDatabaseType())) {
+                throw new SQLException("GTID replication requires matching database types");
+            }
+            // A known reverse channel identifies the current writer, even while its replica is
+            // advancing. Rejoin checks the positions again before changing any replication state.
+            if (GtidReplication.hasSource(master, replica, dialect)
+                    && !GtidReplication.hasSource(replica, master, dialect)
+                    && !isGtidReadOnly(replica, dialect)) {
+                setReadOnly(master, dialect, true);
+                currentMasterId = replica.getId();
+                runtimeStateManager.markSlavePromoted(replica.getId(), master.getId(), "startup_gtid_existing_promoted_primary");
+                if (recoveryEnabled) {
+                    handleOriginalMasterRecovery(master.getId());
+                    recoverOriginalMasterAndRestoreReplication("startup_gtid_existing_promoted_primary", autoFailback);
+                }
+                return;
+            }
+            String masterPosition = GtidReplication.readPosition(master, dialect);
+            PositionOrder order = dialect.comparePositions(masterPosition, GtidReplication.readPosition(replica, dialect));
+            switch (order) {
+                case EQUAL:
+                case AHEAD:
+                    setReadOnly(replica, dialect, true);
+                    promoteToMaster(master);
+                    currentMasterId = master.getId();
+                    GtidReplication.ChannelStatus channel = GtidReplication.rejoin(replica, master, dialect,
+                            replicationUser, replicationPassword) ? readGtidChannel(replica, master, dialect) : null;
+                    if (channel != null && channel.running) {
+                        runtimeStateManager.updateSlaveStatus(replica.getId(), true, true, channel.lagSeconds, "startup_gtid_replication_healthy");
+                        runtimeStateManager.markMasterActive(master.getId(), replica.getId(), "startup_gtid_master_confirmed");
+                    } else {
+                        registry.updateSlaveAvailability(replica.getId(), false);
+                        runtimeStateManager.markSlaveReadsFallbackToMaster(master.getId(), "startup_gtid_waiting_for_replication");
+                    }
+                    break;
+                case BEHIND:
+                    setReadOnly(master, dialect, true);
+                    // Recheck after fencing the configured primary to catch writes made during discovery.
+                    PositionOrder fencedOrder = dialect.comparePositions(GtidReplication.readPosition(master, dialect),
+                            GtidReplication.readPosition(replica, dialect));
+                    if (fencedOrder != PositionOrder.BEHIND && fencedOrder != PositionOrder.EQUAL) {
+                        runtimeStateManager.markDegraded("startup_gtid_positions_changed");
+                        return;
+                    }
+                    if (promoteStartupSlaveToPrimary(replica, master.getId(), "startup_gtid_replica_ahead") && recoveryEnabled) {
+                        handleOriginalMasterRecovery(master.getId());
+                        recoverOriginalMasterAndRestoreReplication("startup_gtid_replica_ahead", autoFailback);
+                    }
+                    break;
+                default:
+                    runtimeStateManager.markDegraded("startup_gtid_" + order.name());
+                    log.warn("GTID 位点未知或分叉，跳过自动角色切换: master={}, replica={}, decision={}",
+                            master.getId(), replica.getId(), order);
+            }
+        } catch (SQLException | IllegalArgumentException ex) {
+            runtimeStateManager.markDegraded("startup_gtid_reconcile_failed");
+            log.warn("GTID 启动编排失败: {}", ex.getMessage());
+        }
+    }
+
+    private boolean recoverGtidPrimary(DataSourceWrapper original, DataSourceWrapper active, GtidDatabaseDialect dialect,
+                                       String reason, boolean autoFailback) {
+        ClusterStatus stage = runtimeStateManager.current().getStatus();
+        try {
+            if (!ClusterStatus.RESTORING_REPLICATION.equals(stage)) {
+                setReadOnly(original, dialect, true);
+                if (!GtidReplication.rejoin(original, active, dialect, replicationUser, replicationPassword)) {
+                    return false;
+                }
+                moveToRecoveryStage(ClusterStatus.CATCHING_UP_ORIGINAL_MASTER, original.getId(), active.getId(), reason);
+                // Catch up to an initial snapshot while the current primary still accepts writes.
+                GtidReplication.ChannelStatus caughtUp = waitForGtidPosition(original, active, dialect, false);
+                if (caughtUp == null) {
+                    return false;
+                }
+                if (!autoFailback) {
+                    completeGtidRecovery(active, original, caughtUp, reason + "_promoted_primary_retained");
+                    return true;
+                }
+                setReadOnly(active, dialect, true);
+                boolean promoted = false;
+                try {
+                    // Capture the final position only after fencing writes on the temporary primary.
+                    if (waitForGtidPosition(original, active, dialect, true) == null) {
+                        return false;
+                    }
+                    moveToRecoveryStage(ClusterStatus.RESTORING_ORIGINAL_MASTER, original.getId(), active.getId(), reason);
+                    promoteToMaster(original);
+                    promoted = true;
+                } finally {
+                    // If promotion failed, verify the original is fenced before reopening writes.
+                    if (!promoted) {
+                        setReadOnly(original, dialect, true);
+                        setReadOnly(active, dialect, false);
+                    }
+                }
+                currentMasterId = original.getId();
+                runtimeStateManager.current().setActiveMasterId(original.getId());
+                moveToRecoveryStage(ClusterStatus.RESTORING_REPLICATION, original.getId(), active.getId(), reason);
+            }
+            GtidReplication.ChannelStatus channel = GtidReplication.rejoin(active, original, dialect,
+                    replicationUser, replicationPassword) ? readGtidChannel(active, original, dialect) : null;
+            if (channel == null || !channel.running) {
+                return false;
+            }
+            completeGtidRecovery(original, active, channel, reason + "_recovery_completed");
+            return true;
+        } catch (SQLException ex) {
+            log.warn("GTID 原主恢复未完成: original={}, active={}, reason={}", original.getId(), active.getId(), ex.getMessage());
+            return false;
+        }
+    }
+
+    private boolean isGtidReadOnly(DataSourceWrapper node, GtidDatabaseDialect dialect) throws SQLException {
+        try (Connection connection = node.getDataSource().getConnection()) {
+            return GtidReplication.isGlobalReadOnly(connection, dialect);
+        }
+    }
+
+    private void completeGtidRecovery(DataSourceWrapper writer, DataSourceWrapper replica,
+                                      GtidReplication.ChannelStatus channel, String reason) {
+        currentMasterId = writer.getId();
+        runtimeStateManager.updateSlaveStatus(replica.getId(), true, true, channel.lagSeconds, reason);
+        runtimeStateManager.markMasterActive(writer.getId(), replica.getId(), reason);
+        if (coordinationService != null && coordinationService.isHealthy()) {
+            coordinationService.broadcastFailbackCompleted(writer.getId(), replica.getId());
+            coordinationService.setMasterStatus(DatasourceCoordinationService.STATUS_NORMAL);
+        }
+        log.info("GTID 恢复完成: writer={}, replica={}, reason={}", writer.getId(), replica.getId(), reason);
+        log.info("GTID 复制状态（恢复完成）: source={}, replica={}, {}", writer.getId(), replica.getId(), channel);
+    }
+
+    private GtidReplication.ChannelStatus waitForGtidPosition(DataSourceWrapper replica, DataSourceWrapper source,
+                                                             GtidDatabaseDialect dialect, boolean requireExact)
+            throws SQLException {
+        String target = GtidReplication.readPosition(source, dialect);
+        if (dialect.comparePositions(target, target) == PositionOrder.UNKNOWN) {
+            log.warn("无法确认 GTID 追赶目标位点: replica={}, source={}", replica.getId(), source.getId());
+            return null;
+        }
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(Math.max(0, catchupTimeoutSeconds));
+        GtidReplication.ChannelStatus channel;
+        do {
+            channel = readGtidChannel(replica, source, dialect);
+            if (channel.running) {
+                PositionOrder order = dialect.comparePositions(GtidReplication.readPosition(replica, dialect), target);
+                if (order == PositionOrder.EQUAL || (!requireExact && order == PositionOrder.AHEAD)) {
+                    return channel;
+                }
+                if (order == PositionOrder.DIVERGED || (requireExact && order == PositionOrder.AHEAD)) {
+                    log.warn("GTID 追赶结果不安全: replica={}, source={}, positionOrder={}", replica.getId(), source.getId(), order);
+                    return null;
+                }
+            }
+            long remainingMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+            if (remainingMs <= 0L) {
+                break;
+            }
+            try {
+                Thread.sleep(Math.min(remainingMs, Math.max(1L, catchupCheckIntervalSeconds) * 1000L));
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        } while (System.nanoTime() < deadline);
+        log.warn("GTID 追赶超时，保持当前主库: replica={}, source={}, channel={}", replica.getId(), source.getId(), channel);
+        return null;
+    }
+
+    private GtidReplication.ChannelStatus readGtidChannel(DataSourceWrapper replica, DataSourceWrapper source,
+                                                         GtidDatabaseDialect dialect) throws SQLException {
+        try (Connection connection = replica.getDataSource().getConnection()) {
+            return GtidReplication.readChannelStatus(connection, dialect, source);
+        } catch (IllegalArgumentException ex) {
+            throw new SQLException(ex.getMessage(), ex);
+        }
+    }
+
+    /** Restore a known replica's global read-only setting without changing its replication channel. */
+    synchronized boolean restoreGtidReplicaReadOnly(DataSourceWrapper replica, DataSourceWrapper expectedPrimary,
+                                                  GtidDatabaseDialect dialect) {
+        // Use the same lock as promotion and failback, and recheck roles after acquiring it.
+        ClusterRuntimeState state = runtimeStateManager == null ? null : runtimeStateManager.current();
+        if (state == null || state.isRecoveryInProgress() || !expectedPrimary.isAvailable()
+                || !expectedPrimary.getId().equals(state.getActiveMasterId())
+                || replica.getId().equals(state.getActiveMasterId())
+                || replica.getId().equals(state.getPendingOriginalMasterId())) {
+            return false;
+        }
+        try {
+            setReadOnly(replica, dialect, true);
+            log.info("已恢复从库全局只读: replica={}", replica.getId());
+            return true;
+        } catch (SQLException ex) {
+            log.warn("无法恢复从库全局只读，暂停从读: replica={}, sqlState={}, errorCode={}; 请检查管理账号权限",
+                    replica.getId(), ex.getSQLState(), ex.getErrorCode());
+            return false;
+        }
+    }
+
+    private void setReadOnly(DataSourceWrapper node, GtidDatabaseDialect dialect, boolean readOnly) throws SQLException {
+        try (Connection connection = node.getDataSource().getConnection(); Statement statement = connection.createStatement()) {
+            if (readOnly) {
+                enableReadOnlyStatements(statement, dialect);
+                if (!GtidReplication.isGlobalReadOnly(connection, dialect)) {
+                    throw new SQLException("Replica global read-only setting was not enabled");
+                }
+            } else {
+                disableReadOnlyStatements(statement, dialect);
+            }
+        }
+    }
+
     private void finishOriginalMasterRecovery(String reason,
                                               DataSourceWrapper originalMaster,
                                               DataSourceWrapper promotedMaster) {
@@ -285,6 +563,9 @@ public class FailoverController {
         currentMasterId = originalMasterId;
         runtimeStateManager.markMasterActive(originalMasterId, promotedMasterId, reason + "_recovery_completed");
         if (coordinationService != null) {
+            if (resolveDialect(originalMaster) instanceof GtidDatabaseDialect) {
+                coordinationService.broadcastFailbackCompleted(originalMasterId, promotedMasterId);
+            }
             coordinationService.setMasterStatus(DatasourceCoordinationService.STATUS_NORMAL);
         }
         logReplicationStatus(promotedMaster, "原主恢复后从库");
@@ -388,12 +669,17 @@ public class FailoverController {
     }
 
     private void executeFailover(String failedMasterId, DataSourceWrapper newMaster) {
-        String oldMasterId = currentMasterId == null ? failedMasterId : currentMasterId;
+        boolean orderedGtid = resolveDialect(newMaster) instanceof GtidDatabaseDialect;
+        String oldMasterId = orderedGtid || currentMasterId == null ? failedMasterId : currentMasterId;
         try {
             promoteToMaster(newMaster);
-            notifySlavesNewMaster(newMaster);
+            // The failed MariaDB node will be fenced and rejoined on recovery. Do not
+            // wait for its connection pool before routing traffic to the new primary.
+            if (!orderedGtid) {
+                notifySlavesNewMaster(newMaster);
+            }
             currentMasterId = newMaster.getId();
-            if (demoteOnFailover) {
+            if (demoteOnFailover && !orderedGtid) {
                 demoteToSlave(failedMasterId);
             }
             if (runtimeStateManager != null) {
@@ -401,6 +687,9 @@ public class FailoverController {
             }
             if (coordinationService != null) {
                 coordinationService.broadcastFailoverEvent(oldMasterId, newMaster.getId());
+                if (resolveDialect(newMaster) instanceof GtidDatabaseDialect) {
+                    coordinationService.setMasterStatus(DatasourceCoordinationService.STATUS_SLAVE_PROMOTED);
+                }
             }
             notifyFailoverCompleted(oldMasterId, newMaster.getId());
             log.warn("故障转移完成，已从从库提升新主: oldMaster={}, newMaster={}", oldMasterId, newMaster.getId());
@@ -427,6 +716,12 @@ public class FailoverController {
 
     private void reconfigureSlave(DataSourceWrapper slave, DataSourceWrapper newMaster) throws SQLException {
         DatabaseDialect dialect = resolveDialect(slave);
+        if (dialect instanceof GtidDatabaseDialect) {
+            if (!GtidReplication.rejoin(slave, newMaster, (GtidDatabaseDialect) dialect, replicationUser, replicationPassword)) {
+                throw new SQLException("GTID replica cannot safely follow the selected primary");
+            }
+            return;
+        }
         try (Connection conn = slave.getDataSource().getConnection(); Statement stmt = conn.createStatement()) {
             stopSlaveReplication(stmt, dialect);
             if (replicationUser != null && !replicationUser.isEmpty() && dialect != null && dialect.getStartReplicationSql() != null) {
@@ -447,7 +742,16 @@ public class FailoverController {
                 disableReadOnlyStatements(stmt, dialect);
                 return;
             }
-            stopSlaveReplication(stmt, dialect);
+            if (dialect instanceof GtidDatabaseDialect) {
+                GtidDatabaseDialect gtidDialect = (GtidDatabaseDialect) dialect;
+                String position = GtidReplication.readPosition(stmt, gtidDialect);
+                if (gtidDialect.comparePositions(position, position) == PositionOrder.UNKNOWN) {
+                    throw new SQLException("Cannot promote a node with an unknown GTID position");
+                }
+                GtidReplication.detach(stmt, gtidDialect);
+            } else {
+                stopSlaveReplication(stmt, dialect);
+            }
             executeIfPresent(stmt, dialect == null ? null : dialect.getPromoteToPrimarySql());
             if (isPostgreSqlDialect(dialect) && !waitForPostgreSqlPrimary(stmt)) {
                 throw new SQLException("PostgreSQL 升主超时，节点仍处于 recovery 状态");
@@ -485,6 +789,14 @@ public class FailoverController {
             return;
         }
         DatabaseDialect dialect = resolveDialect(demoted);
+        if (dialect instanceof GtidDatabaseDialect) {
+            try {
+                GtidReplication.rejoin(demoted, currentMaster, (GtidDatabaseDialect) dialect, replicationUser, replicationPassword);
+            } catch (SQLException ex) {
+                log.warn("GTID 原主降级未完成: nodeId={}, reason={}", demotedMasterId, ex.getMessage());
+            }
+            return;
+        }
         try (Connection conn = demoted.getDataSource().getConnection(); Statement stmt = conn.createStatement()) {
             enableReadOnlyStatements(stmt, dialect);
             if (replicationUser != null && !replicationUser.isEmpty() && dialect != null && dialect.getStartReplicationSql() != null) {
@@ -681,6 +993,15 @@ public class FailoverController {
     private boolean restoreOriginalReplication(DataSourceWrapper originalMaster, DataSourceWrapper promotedMaster) {
         log.info("开始恢复原始复制关系: currentMaster={}, rejoinNode={}", originalMaster.getId(), promotedMaster.getId());
         DatabaseDialect promotedDialect = resolveDialect(promotedMaster);
+        if (promotedDialect instanceof GtidDatabaseDialect) {
+            try {
+                return GtidReplication.rejoin(promotedMaster, originalMaster, (GtidDatabaseDialect) promotedDialect,
+                        replicationUser, replicationPassword);
+            } catch (SQLException ex) {
+                log.warn("GTID 从库复制重挂失败: nodeId={}, reason={}", promotedMaster.getId(), ex.getMessage());
+                return false;
+            }
+        }
         DatabaseRecoveryHandler recoveryHandler = resolveRecoveryHandler(promotedDialect);
         if (recoveryHandler != null) {
             boolean restored = recoveryHandler.restoreOriginalReplication(buildRecoveryContext(promotedMaster, originalMaster, promotedDialect));
@@ -721,9 +1042,15 @@ public class FailoverController {
         }
     }
 
-    public boolean recoverSlaveReplication(String recoveredSlaveId) {
+    public synchronized boolean recoverSlaveReplication(String recoveredSlaveId) {
         DataSourceWrapper recoveredSlave = registry.getSlave(recoveredSlaveId);
         DataSourceWrapper currentMaster = resolveActiveMaster();
+        if (recoveredSlave == null) {
+            DataSourceWrapper configuredMaster = registry.getMaster(recoveredSlaveId);
+            if (resolveDialect(configuredMaster) instanceof GtidDatabaseDialect) {
+                recoveredSlave = configuredMaster;
+            }
+        }
         if (recoveredSlave == null || currentMaster == null || recoveredSlave.getId().equals(currentMaster.getId())) {
             return false;
         }
@@ -731,7 +1058,7 @@ public class FailoverController {
         if (dialect == null || dialect.getDatabaseType() == null) {
             return false;
         }
-        if ("mysql".equalsIgnoreCase(dialect.getDatabaseType())) {
+        if (dialect instanceof GtidDatabaseDialect || "mysql".equalsIgnoreCase(dialect.getDatabaseType())) {
             return restoreOriginalReplication(currentMaster, recoveredSlave);
         }
         if (!"postgresql".equalsIgnoreCase(dialect.getDatabaseType())) {

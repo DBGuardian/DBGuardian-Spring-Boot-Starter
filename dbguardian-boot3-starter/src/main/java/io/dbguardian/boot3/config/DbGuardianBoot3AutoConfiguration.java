@@ -304,7 +304,7 @@ public class DbGuardianBoot3AutoConfiguration {
         return controller;
     }
 
-    @Bean
+    @Bean(destroyMethod = "stopHealthChecks")
     @ConditionalOnMissingBean
     public DataSourceHealthChecker dataSourceHealthChecker(
             DataSourceRegistry dataSourceRegistry,
